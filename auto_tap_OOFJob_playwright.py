@@ -268,7 +268,7 @@ BLOCKED_RESOURCE_URLS = [
     "*.otf",
 ]
 
-CDP_URL = "http://127.0.0.1:9222"
+CDP_URL = "http://127.0.0.1:9333"
 
 LOG_DIR = SCRIPT_DIR / "log"
 
@@ -383,11 +383,11 @@ def attach_to_existing_chrome(playwright):
     連線到已經手動啟動，且開啟 remote debugging 的 Chrome。
 
     Windows：
-    chrome.exe --remote-debugging-port=9222 --user-data-dir="..."
+    chrome.exe --remote-debugging-port=9333 --user-data-dir="..."
 
     macOS：
     /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome \
-      --remote-debugging-port=9222 \
+      --remote-debugging-port=9333 \
       --user-data-dir="$HOME/selenium-chrome-profile"
     """
 
@@ -2151,7 +2151,7 @@ if __name__ == "__main__":
 # macOS:
 r"""
 /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-   --remote-debugging-port=9222 \
+   --remote-debugging-port=9333 \
    --user-data-dir="$HOME/selenium-chrome-profile" \
    --disable-features=BackForwardCache
 """
@@ -2159,7 +2159,7 @@ r"""
 # Windows PowerShell:
 r"""
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" `
-   --remote-debugging-port=9222 `
+   --remote-debugging-port=9333 `
    --user-data-dir="C:\Users\User\selenium-chrome-profile" `
    --disable-features=BackForwardCache
 """

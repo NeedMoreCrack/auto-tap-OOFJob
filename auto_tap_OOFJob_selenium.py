@@ -403,7 +403,7 @@ def attach_to_existing_chrome():
 
     Chrome 必須使用：
 
-    --remote-debugging-port=9222
+    --remote-debugging-port=9333
 
     啟動。
     """
@@ -412,7 +412,7 @@ def attach_to_existing_chrome():
 
     options.add_experimental_option(
         "debuggerAddress",
-        "127.0.0.1:9222"
+        "127.0.0.1:9333"
     )
 
     return webdriver.Chrome(
@@ -2794,7 +2794,7 @@ if __name__ == "__main__":
 # PowerShell：
 r"""
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" `
-    --remote-debugging-port=9222 `
+    --remote-debugging-port=9333 `
     --user-data-dir="C:\Users\User\selenium-chrome-profile" `
     --disable-features=BackForwardCache
 """
@@ -2802,7 +2802,7 @@ r"""
 # Mac Terminal:
 r"""
 /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-  --remote-debugging-port=9222 \
+  --remote-debugging-port=9333 \
   --user-data-dir="$HOME/selenium-chrome-profile" \
   --disable-features=BackForwardCache
 """
