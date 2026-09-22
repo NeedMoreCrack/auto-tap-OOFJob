@@ -4,15 +4,14 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 import random
 import time
-
-# =========================================================
-# 第三方套件自動檢查 / 安裝
-# =========================================================
-
 import importlib
 import subprocess
 import sys
 
+
+# =========================================================
+# 第三方套件自動檢查 / 安裝
+# =========================================================
 
 REQUIRED_PACKAGES = {
     "yaml": "PyYAML",
@@ -27,33 +26,18 @@ def ensure_required_packages():
     若缺少套件：
         自動使用目前執行中的 Python：
         python -m pip install <package>
-
-    注意：
-        - 必須有 pip
-        - 第一次安裝時必須可以連上網路
-        - 安裝完成後會直接繼續執行，不需要重新啟動程式
     """
 
     missing_packages = []
 
     for import_name, pip_name in REQUIRED_PACKAGES.items():
-
         try:
-            importlib.import_module(
-                import_name
-            )
-
+            importlib.import_module(import_name)
         except ImportError:
-            missing_packages.append(
-                pip_name
-            )
+            missing_packages.append(pip_name)
 
     if not missing_packages:
-
-        print(
-            "必要 Python 套件已安裝完成"
-        )
-
+        print("必要 Python 套件已安裝完成")
         return
 
     print(
@@ -62,13 +46,9 @@ def ensure_required_packages():
     )
 
     for pip_name in missing_packages:
-
-        print(
-            f"開始安裝：{pip_name}"
-        )
+        print(f"開始安裝：{pip_name}")
 
         try:
-
             subprocess.check_call(
                 [
                     sys.executable,
@@ -80,34 +60,23 @@ def ensure_required_packages():
             )
 
         except subprocess.CalledProcessError as e:
-
             raise RuntimeError(
                 f"自動安裝 {pip_name} 失敗，"
                 f"請手動執行："
                 f"{sys.executable} -m pip install {pip_name}"
             ) from e
 
-        print(
-            f"安裝完成：{pip_name}"
-        )
+        print(f"安裝完成：{pip_name}")
 
-    # 再驗證一次，避免 pip 看似成功但目前環境仍無法 import。
     for import_name, pip_name in REQUIRED_PACKAGES.items():
-
         try:
-            importlib.import_module(
-                import_name
-            )
-
+            importlib.import_module(import_name)
         except ImportError as e:
-
             raise RuntimeError(
                 f"套件 {pip_name} 安裝後仍無法 import。"
             ) from e
 
-    print(
-        "所有必要 Python 套件準備完成"
-    )
+    print("所有必要 Python 套件準備完成")
 
 
 ensure_required_packages()
@@ -115,8 +84,10 @@ ensure_required_packages()
 
 import yaml
 
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-
+from playwright.sync_api import (
+    sync_playwright,
+    TimeoutError as PlaywrightTimeoutError
+)
 
 
 # =========================================================
@@ -125,13 +96,6 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIR / "config.yaml"
-
-# ---------------------------------------------------------
-# 預設設定
-#
-# config.yaml 不存在、欄位缺少、格式錯誤或值不合法時，
-# 對應欄位會自動退回這裡的預設值。
-# ---------------------------------------------------------
 
 DEFAULT_CONFIG = {
     "log_max_jobs": 500,
@@ -148,23 +112,12 @@ def load_config():
         log_max_jobs
         max_jobs
         max_pages
-
-    若：
-        - config.yaml 不存在
-        - YAML 格式錯誤
-        - 設定不是 dict
-        - 欄位不存在
-        - 值不是正整數
-
-    則該欄位使用 DEFAULT_CONFIG 的預設值。
     """
 
     config = DEFAULT_CONFIG.copy()
 
     if not CONFIG_PATH.exists():
-        print(
-            f"找不到設定檔：{CONFIG_PATH.name}"
-        )
+        print(f"找不到設定檔：{CONFIG_PATH.name}")
         print(
             "使用預設設定："
             f"LOG_MAX_JOBS={config['log_max_jobs']}、"
@@ -186,9 +139,7 @@ def load_config():
             f"讀取設定檔失敗："
             f"{type(e).__name__}: {e}"
         )
-        print(
-            "改用預設設定。"
-        )
+        print("改用預設設定。")
         return config
 
     if loaded is None:
@@ -199,9 +150,7 @@ def load_config():
             "設定檔格式錯誤："
             "config.yaml 最外層必須是 YAML mapping。"
         )
-        print(
-            "改用預設設定。"
-        )
+        print("改用預設設定。")
         return config
 
     for key, default_value in DEFAULT_CONFIG.items():
@@ -216,17 +165,13 @@ def load_config():
                 and value > 0
         ):
             config[key] = value
-
         else:
             print(
                 f"設定 {key}={value!r} 不合法，"
                 f"改用預設值 {default_value}"
             )
 
-    print(
-        f"已讀取設定檔：{CONFIG_PATH}"
-    )
-
+    print(f"已讀取設定檔：{CONFIG_PATH}")
     print(
         "目前設定："
         f"LOG_MAX_JOBS={config['log_max_jobs']}、"
@@ -243,13 +188,11 @@ LOG_MAX_JOBS = CONFIG["log_max_jobs"]
 MAX_JOBS = CONFIG["max_jobs"]
 MAX_PAGES = CONFIG["max_pages"]
 
-# 每瀏覽幾筆職缺，主動要求 Chrome 做一次記憶體清理。
 MEMORY_CLEANUP_INTERVAL = 20
 
-# 詳細頁維持使用 page.goto()。
-# RAM 主要在列表收集頁累積；詳細頁不使用 location.replace()，避免 navigation race。
+# 開啟後會印出背景 / 前景、readyState、DOM 長度等資訊。
+DEBUG_PAGE_STATE = True
 
-# 這支程式只需要文字資訊，圖片 / 影片 / 字型不需要下載與解碼。
 BLOCKED_RESOURCE_URLS = [
     "*.png",
     "*.jpg",
@@ -331,7 +274,6 @@ def write_log(
             "a",
             encoding="utf-8"
     ) as file:
-
         file.write(
             message + "\n"
         )
@@ -367,7 +309,6 @@ def write_job_log(
             "a",
             encoding="utf-8"
     ) as file:
-
         for line in lines:
             file.write(
                 line + "\n"
@@ -381,14 +322,6 @@ def write_job_log(
 def attach_to_existing_chrome(playwright):
     """
     連線到已經手動啟動，且開啟 remote debugging 的 Chrome。
-
-    Windows：
-    chrome.exe --remote-debugging-port=9333 --user-data-dir="..."
-
-    macOS：
-    /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome \
-      --remote-debugging-port=9333 \
-      --user-data-dir="$HOME/selenium-chrome-profile"
     """
 
     browser = playwright.chromium.connect_over_cdp(
@@ -412,10 +345,6 @@ def get_current_page(context):
     優先找目前有焦點的頁面。
     如果 Chrome 不在前景，document.hasFocus() 可能全部為 False，
     此時退回使用 context.pages[-1]。
-
-    不檢查網址。
-    不寫死 求職網 網址。
-    不使用 bring_to_front()。
     """
 
     pages = context.pages
@@ -438,18 +367,10 @@ def get_current_page(context):
     page = focused_page or pages[-1]
 
     print()
-    print(
-        "=" * 100
-    )
-    print(
-        "使用目前 Chrome 分頁"
-    )
-    print(
-        f"頁面標題：{page.title()}"
-    )
-    print(
-        f"頁面網址：{page.url}"
-    )
+    print("=" * 100)
+    print("使用目前 Chrome 分頁")
+    print(f"頁面標題：{page.title()}")
+    print(f"頁面網址：{page.url}")
 
     if focused_page is None:
         print(
@@ -457,9 +378,7 @@ def get_current_page(context):
             "改用 Chrome Context 中最後一個分頁。"
         )
 
-    print(
-        "=" * 100
-    )
+    print("=" * 100)
     print()
 
     return page
@@ -468,13 +387,6 @@ def get_current_page(context):
 def create_low_memory_cdp_session(context, page):
     """
     為指定 Page 建立 CDP Session，並套用低記憶體設定。
-
-    目的：
-    1. 關閉 HTTP cache
-    2. 阻擋圖片 / 影片 / 字型等不必要資源
-    3. 之後可透過同一個 Session 主動要求 V8 / Chrome 清理記憶體
-
-    這些操作都不需要把 Chrome 視窗 bring_to_front()。
     """
 
     session = context.new_cdp_session(page)
@@ -519,9 +431,7 @@ def cleanup_chrome_memory(session):
     要求 Chrome 清理 Browser Cache 與 JavaScript Heap。
     """
 
-    print(
-        "  執行 Chrome 記憶體清理..."
-    )
+    print("  執行 Chrome 記憶體清理...")
 
     try:
         session.send(
@@ -537,8 +447,6 @@ def cleanup_chrome_memory(session):
     except Exception:
         pass
 
-    # 部分 Chrome 版本支援，部分不支援。
-    # 不支援時忽略即可，不影響主要流程。
     try:
         session.send(
             "Memory.forciblyPurgeJavaScriptMemory"
@@ -547,24 +455,120 @@ def cleanup_chrome_memory(session):
         pass
 
 
+def print_page_state(page):
+    """
+    印出目前頁面的可見狀態與 DOM 狀態，
+    用來確認背景分頁是否影響內容載入。
+    """
+
+    if not DEBUG_PAGE_STATE:
+        return
+
+    try:
+        state = page.evaluate(
+            """
+            () => ({
+                hasFocus: document.hasFocus(),
+                hidden: document.hidden,
+                visibilityState: document.visibilityState,
+                readyState: document.readyState,
+                bodyTextLength: document.body?.textContent?.length ?? 0,
+                bodyHtmlLength: document.body?.innerHTML?.length ?? 0
+            })
+            """
+        )
+
+        print(
+            "  Page 狀態："
+            f"focus={state['hasFocus']}、"
+            f"hidden={state['hidden']}、"
+            f"visibility={state['visibilityState']}、"
+            f"readyState={state['readyState']}、"
+            f"textLength={state['bodyTextLength']}、"
+            f"htmlLength={state['bodyHtmlLength']}"
+        )
+
+    except Exception as e:
+        print(
+            f"  無法取得 Page 狀態："
+            f"{type(e).__name__}: {e}"
+        )
+
+
+def wait_for_job_detail(
+        page,
+        timeout=15000
+):
+    """
+    等待職缺詳細資料真正出現在 DOM。
+
+    重點：
+    - 不依賴固定 sleep
+    - 不要求 visible，只要求 DOM 裡已存在內容
+    - 避免背景分頁 rendering / timer throttling 造成過早擷取
+
+    判斷條件：
+    工作待遇 / 上班地點 / 學歷要求
+    至少找到 2 個才視為主要詳細資料已載入。
+    """
+
+    labels = [
+        "工作待遇",
+        "上班地點",
+        "學歷要求",
+    ]
+
+    deadline = time.monotonic() + (timeout / 1000)
+    found_labels = set()
+
+    while time.monotonic() < deadline:
+        for label in labels:
+            if label in found_labels:
+                continue
+
+            try:
+                count = page.get_by_text(
+                    label,
+                    exact=True
+                ).count()
+
+                if count > 0:
+                    found_labels.add(label)
+
+            except Exception:
+                pass
+
+        if len(found_labels) >= 2:
+            print(
+                "  職缺詳細資料已進入 DOM："
+                + "、".join(sorted(found_labels))
+            )
+            return True
+
+        time.sleep(0.2)
+
+    print(
+        "  警告：等待職缺詳細資料逾時，"
+        f"目前找到：{sorted(found_labels)}"
+    )
+
+    return False
+
+
 def navigate_job_page(
         page,
         url,
         timeout=30000
 ):
     """
-    使用 Playwright 原生 page.goto() 導航到職缺詳細頁。
+    導航到職缺詳細頁，並分階段等待：
 
-    不再使用 window.location.replace()。
-    location.replace() 是由 page.evaluate() 觸發 navigation，
-    JavaScript execution context 會在換頁時被銷毀；如果後續
-    wait_for_load_state() 剛好讀到舊頁面的 load state，就可能
-    在新頁仍導航中時繼續執行，造成：
+    1. DOMContentLoaded
+    2. document.readyState == complete
+    3. networkidle（非必要，等不到不視為失敗）
+    4. 等待職缺主要欄位進入 DOM
 
-        Execution context was destroyed
-
-    page.goto() 會由 Playwright 自己追蹤這次 navigation，
-    等到新文件進入 domcontentloaded 後才返回，較穩定。
+    對 Vue / JavaScript 動態頁比固定 sleep 穩定。
     """
 
     try:
@@ -573,11 +577,46 @@ def navigate_job_page(
             wait_until="domcontentloaded",
             timeout=timeout
         )
+
     except PlaywrightTimeoutError:
         print(
-            "  頁面載入逾時，"
-            "但繼續嘗試讀取目前 DOM"
+            "  DOMContentLoaded 等待逾時，"
+            "繼續嘗試等待目前頁面"
         )
+
+    try:
+        page.wait_for_function(
+            "() => document.readyState === 'complete'",
+            timeout=timeout
+        )
+
+    except PlaywrightTimeoutError:
+        print(
+            "  document.readyState 等待逾時，"
+            "繼續處理"
+        )
+
+    try:
+        page.wait_for_load_state(
+            "networkidle",
+            timeout=8000
+        )
+
+    except PlaywrightTimeoutError:
+        print(
+            "  networkidle 未達成，"
+            "可能仍有 analytics / tracking request，"
+            "繼續等待職缺內容"
+        )
+
+    wait_for_job_detail(
+        page,
+        timeout=15000
+    )
+
+    print_page_state(
+        page
+    )
 
 
 # =========================================================
@@ -591,6 +630,7 @@ def get_page_number(url):
     """
 
     parts = urlsplit(url)
+
     query = dict(
         parse_qsl(
             parts.query,
@@ -628,18 +668,14 @@ def set_page_number(
     page_replaced = False
 
     for key, value in query_pairs:
-
         if key == "page":
-
             new_pairs.append(
                 (
                     "page",
                     str(page_number)
                 )
             )
-
             page_replaced = True
-
         else:
             new_pairs.append(
                 (
@@ -685,9 +721,7 @@ def wait_for_job_cards(
     """
 
     for selector in CARD_SELECTORS:
-
         try:
-
             page.locator(
                 selector
             ).first.wait_for(
@@ -706,14 +740,9 @@ def wait_for_job_cards(
 def extract_jobs_from_current_page(page):
     """
     一次用 JavaScript 從 DOM 把：
-
     job_no
     href
-
     全部取回來。
-
-    避免 Selenium / Playwright 一張卡一張卡跨程序呼叫，
-    尤其在 macOS 上 DOM 很大時會非常慢。
     """
 
     result = page.evaluate(
@@ -769,7 +798,6 @@ def extract_jobs_from_current_page(page):
     jobs = []
 
     for item in result:
-
         job_no = item.get(
             "jobNo"
         )
@@ -800,16 +828,7 @@ def collect_job_links(
         max_pages=MAX_PAGES
 ):
     """
-    用 求職網 本身的 page= 分頁收集職缺。
-
-    不再使用：
-        無限往下滾
-        document.body.scrollHeight
-        bounce
-        smooth scroll
-        每張 card 各自 find_element()
-
-    這樣 Windows / macOS 都會穩定很多。
+    用網站本身的 page= 分頁收集職缺。
     """
 
     print(
@@ -823,6 +842,7 @@ def collect_job_links(
     )
 
     base_url = page.url
+
     start_page = get_page_number(
         base_url
     )
@@ -831,9 +851,7 @@ def collect_job_links(
         f"從第 {start_page} 頁開始收集"
     )
 
-    print(
-        "=" * 100
-    )
+    print("=" * 100)
 
     seen = {}
 
@@ -842,7 +860,6 @@ def collect_job_links(
     for offset in range(
             max_pages
     ):
-
         if len(seen) >= max_jobs:
             break
 
@@ -864,14 +881,8 @@ def collect_job_links(
             f"{len(seen)}/{max_jobs} 筆"
         )
 
-        # -------------------------------------------------
-        # 第一次就是目前頁時，不必重複導航
-        # -------------------------------------------------
-
         if page.url != target_url:
-
             try:
-
                 page.goto(
                     target_url,
                     wait_until="domcontentloaded",
@@ -879,15 +890,10 @@ def collect_job_links(
                 )
 
             except PlaywrightTimeoutError:
-
                 print(
                     "  頁面導航逾時，"
                     "但繼續檢查目前 DOM"
                 )
-
-        # -------------------------------------------------
-        # 等職缺卡片
-        # -------------------------------------------------
 
         selector = wait_for_job_cards(
             page,
@@ -895,7 +901,6 @@ def collect_job_links(
         )
 
         if selector is None:
-
             print(
                 "  找不到職缺卡片"
             )
@@ -903,11 +908,9 @@ def collect_job_links(
             empty_or_duplicate_pages += 1
 
             if empty_or_duplicate_pages >= 3:
-
                 print(
                     "  連續 3 頁沒有有效職缺，停止收集。"
                 )
-
                 break
 
             continue
@@ -915,10 +918,6 @@ def collect_job_links(
         print(
             f"  使用卡片選擇器：{selector}"
         )
-
-        # -------------------------------------------------
-        # 讓頁面上的前端 JS 稍微穩定
-        # -------------------------------------------------
 
         time.sleep(
             random.uniform(
@@ -940,7 +939,6 @@ def collect_job_links(
         )
 
         for job_no, href in jobs:
-
             if job_no in seen:
                 continue
 
@@ -964,32 +962,22 @@ def collect_job_links(
         )
 
         if new_count == 0:
-
             empty_or_duplicate_pages += 1
 
             print(
                 f"  本頁沒有新職缺 "
                 f"({empty_or_duplicate_pages}/3)"
             )
-
         else:
-
             empty_or_duplicate_pages = 0
 
         if empty_or_duplicate_pages >= 3:
-
             print(
                 "  連續 3 頁沒有新增職缺，停止收集。"
             )
-
             break
 
-        # -------------------------------------------------
-        # 模擬一般使用者換頁間隔
-        # -------------------------------------------------
-
         if len(seen) < max_jobs:
-
             delay = random.uniform(
                 1.2,
                 2.5
@@ -1005,7 +993,6 @@ def collect_job_links(
             )
 
     if len(seen) > max_jobs:
-
         seen = dict(
             list(
                 seen.items()
@@ -1013,19 +1000,14 @@ def collect_job_links(
         )
 
     print()
-
-    print(
-        "=" * 100
-    )
+    print("=" * 100)
 
     print(
         f"職缺連結收集完成，"
         f"總共 {len(seen)} 筆"
     )
 
-    print(
-        "=" * 100
-    )
+    print("=" * 100)
 
     return seen
 
@@ -1035,7 +1017,6 @@ def collect_job_links(
 # =========================================================
 
 def clean_text(text):
-
     if text is None:
         return ""
 
@@ -1051,12 +1032,13 @@ def safe_get_text(
     """
     依序嘗試多個 CSS selector，
     找到第一個有文字的元素就回傳。
+
+    使用 text_content()，
+    避免依賴實際畫面 rendering。
     """
 
     for selector in selectors:
-
         try:
-
             locator = page.locator(
                 selector
             )
@@ -1066,20 +1048,96 @@ def safe_get_text(
             for index in range(
                     count
             ):
-
                 text = clean_text(
                     locator.nth(
                         index
-                    ).inner_text(
-                        timeout=2000
+                    ).text_content(
+                        timeout=5000
                     )
                 )
 
                 if text:
                     return text
 
-        except Exception:
+        except Exception as e:
+            if DEBUG_PAGE_STATE:
+                print(
+                    f"  safe_get_text 失敗："
+                    f"selector={selector}、"
+                    f"{type(e).__name__}: {e}"
+                )
+
             continue
+
+    return None
+
+
+def extract_row_value(
+        page,
+        labels
+):
+    """
+    優先直接從 104 詳細頁的 list-row 結構取得欄位。
+
+    結構大致為：
+        .list-row
+            h3 = 欄位名稱
+            .list-row__data = 欄位內容
+
+    如果 DOM 改版或找不到，回傳 None，
+    讓上層 fallback 到全文文字解析。
+    """
+
+    for label in labels:
+        try:
+            rows = page.locator(
+                ".list-row"
+            )
+
+            count = rows.count()
+
+            for index in range(count):
+                row = rows.nth(index)
+
+                head = row.locator(
+                    "h3"
+                ).first
+
+                if head.count() == 0:
+                    continue
+
+                head_text = clean_text(
+                    head.text_content(
+                        timeout=2000
+                    )
+                )
+
+                if head_text != label:
+                    continue
+
+                data = row.locator(
+                    ".list-row__data"
+                ).first
+
+                if data.count() == 0:
+                    continue
+
+                value = clean_text(
+                    data.text_content(
+                        timeout=3000
+                    )
+                )
+
+                if value:
+                    return value
+
+        except Exception as e:
+            if DEBUG_PAGE_STATE:
+                print(
+                    f"  extract_row_value 失敗："
+                    f"label={label}、"
+                    f"{type(e).__name__}: {e}"
+                )
 
     return None
 
@@ -1089,32 +1147,42 @@ def safe_get_text(
 # =========================================================
 
 def get_page_lines(page):
+    """
+    取得整個 body 的文字。
+
+    使用 text_content()，不使用 inner_text()，
+    避免背景分頁與 rendering 狀態影響。
+    """
 
     try:
-
         text = page.locator(
             "body"
-        ).inner_text(
-            timeout=5000
+        ).text_content(
+            timeout=10000
         )
+
+        if not text:
+            return []
 
         lines = []
 
         for line in text.splitlines():
-
             line = clean_text(
                 line
             )
 
             if line:
-
                 lines.append(
                     line
                 )
 
         return lines
 
-    except Exception:
+    except Exception as e:
+        print(
+            f"  取得頁面文字失敗："
+            f"{type(e).__name__}: {e}"
+        )
 
         return []
 
@@ -1124,17 +1192,13 @@ def extract_value_after_label(
         labels,
         max_lookahead=3
 ):
-
     for index, line in enumerate(
             lines
     ):
-
         for label in labels:
-
             if line.startswith(
                     label + "："
             ):
-
                 value = clean_text(
                     line[
                         len(label) + 1:
@@ -1145,12 +1209,10 @@ def extract_value_after_label(
                     return value
 
             if line == label:
-
                 for offset in range(
                         1,
                         max_lookahead + 1
                 ):
-
                     next_index = (
                             index
                             + offset
@@ -1195,6 +1257,7 @@ def extract_multi_value_after_label(
         "可上班日",
         "需求人數",
         "工作地點",
+        "上班地點",
         "工作待遇",
         "職務類別"
     }
@@ -1202,13 +1265,10 @@ def extract_multi_value_after_label(
     for index, line in enumerate(
             lines
     ):
-
         for label in labels:
-
             if line.startswith(
                     label + "："
             ):
-
                 value = clean_text(
                     line[
                         len(label) + 1:
@@ -1219,14 +1279,12 @@ def extract_multi_value_after_label(
                     return value
 
             if line == label:
-
                 values = []
 
                 for offset in range(
                         1,
                         max_lines + 1
                 ):
-
                     next_index = (
                             index
                             + offset
@@ -1254,7 +1312,6 @@ def extract_multi_value_after_label(
                     )
 
                 if values:
-
                     return "、".join(
                         values
                     )
@@ -1283,9 +1340,7 @@ def extract_job_name(
     title = page.title()
 
     if title:
-
         if "｜" in title:
-
             title = title.split(
                 "｜"
             )[0]
@@ -1301,6 +1356,17 @@ def extract_job_location(
         page,
         lines
 ):
+    value = extract_row_value(
+        page,
+        [
+            "上班地點",
+            "工作地點"
+        ]
+    )
+
+    if value:
+        return value
+
     value = extract_value_after_label(
         lines,
         [
@@ -1316,6 +1382,17 @@ def extract_education(
         page,
         lines
 ):
+    value = extract_row_value(
+        page,
+        [
+            "學歷要求",
+            "學歷"
+        ]
+    )
+
+    if value:
+        return value
+
     value = extract_value_after_label(
         lines,
         [
@@ -1331,6 +1408,18 @@ def extract_salary(
         page,
         lines
 ):
+    value = extract_row_value(
+        page,
+        [
+            "工作待遇",
+            "薪資待遇",
+            "薪資"
+        ]
+    )
+
+    if value:
+        return value
+
     value = extract_value_after_label(
         lines,
         [
@@ -1349,43 +1438,56 @@ def extract_technologies(
 ):
     technologies = []
 
-    tools = extract_multi_value_after_label(
-        lines,
+    # 先嘗試 DOM row。
+    tools = extract_row_value(
+        page,
         [
             "擅長工具",
             "電腦專長"
-        ],
-        max_lines=5
+        ]
     )
 
-    if tools:
+    if not tools:
+        tools = extract_multi_value_after_label(
+            lines,
+            [
+                "擅長工具",
+                "電腦專長"
+            ],
+            max_lines=5
+        )
 
+    if tools:
         technologies.append(
             tools
         )
 
-    skills = extract_multi_value_after_label(
-        lines,
+    skills = extract_row_value(
+        page,
         [
             "工作技能"
-        ],
-        max_lines=5
+        ]
     )
 
-    if skills:
+    if not skills:
+        skills = extract_multi_value_after_label(
+            lines,
+            [
+                "工作技能"
+            ],
+            max_lines=5
+        )
 
+    if skills:
         technologies.append(
             skills
         )
 
     if technologies:
-
         unique_values = []
 
         for value in technologies:
-
             if value not in unique_values:
-
                 unique_values.append(
                     value
                 )
@@ -1398,7 +1500,6 @@ def extract_technologies(
 
 
 def extract_job_detail(page):
-
     lines = get_page_lines(
         page
     )
@@ -1425,6 +1526,77 @@ def extract_job_detail(page):
             lines
         ),
     }
+
+
+def count_missing_detail_fields(detail):
+    """
+    job_name 不計入缺少欄位判斷。
+    """
+
+    keys = [
+        "location",
+        "technologies",
+        "education",
+        "salary",
+    ]
+
+    return sum(
+        1
+        for key in keys
+        if not detail.get(key)
+        or detail.get(key) == "未取得"
+    )
+
+
+def extract_job_detail_with_retry(
+        page,
+        retry_count=2
+):
+    """
+    取得職缺資料。
+
+    若 location / technologies / education / salary
+    有 3 個以上未取得，代表很可能抓太早，
+    重新等待 DOM 後再次解析。
+    """
+
+    for attempt in range(
+            retry_count + 1
+    ):
+        detail = extract_job_detail(
+            page
+        )
+
+        missing_count = count_missing_detail_fields(
+            detail
+        )
+
+        if missing_count < 3:
+            return detail
+
+        if attempt >= retry_count:
+            return detail
+
+        print(
+            f"  詳細資料不足 "
+            f"({missing_count}/4 未取得)，"
+            f"第 {attempt + 1} 次重新等待後再讀取..."
+        )
+
+        print_page_state(
+            page
+        )
+
+        wait_for_job_detail(
+            page,
+            timeout=8000
+        )
+
+        time.sleep(
+            0.3
+        )
+
+    return detail
 
 
 # =========================================================
@@ -1460,7 +1632,6 @@ def simulate_reading(
     )
 
     while elapsed < total_duration:
-
         action = random.choices(
             [
                 "scroll_down",
@@ -1477,7 +1648,6 @@ def simulate_reading(
         )[0]
 
         if action == "scroll_down":
-
             distance = random.randint(
                 300,
                 600
@@ -1489,7 +1659,6 @@ def simulate_reading(
             )
 
         elif action == "scroll_down_small":
-
             distance = random.randint(
                 100,
                 250
@@ -1501,7 +1670,6 @@ def simulate_reading(
             )
 
         elif action == "scroll_up":
-
             distance = random.randint(
                 100,
                 300
@@ -1554,22 +1722,13 @@ def visit_jobs(
     current_log = create_log_file()
 
     print()
-
+    print("=" * 100)
+    print("職缺連結已全部收集完成。")
     print(
-        "=" * 100
+        "接下來使用同一個 Chrome Tab 依序瀏覽，"
+        "並定期清理 Chrome 記憶體。"
     )
-
-    print(
-        "職缺連結已全部收集完成。"
-    )
-
-    print(
-        "接下來使用同一個 Chrome Tab 依序瀏覽，並定期清理 Chrome 記憶體。"
-    )
-
-    print(
-        "=" * 100
-    )
+    print("=" * 100)
 
     for idx, (
             job_no,
@@ -1578,23 +1737,16 @@ def visit_jobs(
         job_links.items(),
         1
     ):
-
         if jobs_in_current_log >= LOG_MAX_JOBS:
-
             print()
-
-            print(
-                "=" * 100
-            )
+            print("=" * 100)
 
             print(
                 f"目前 LOG 已達 {LOG_MAX_JOBS} 筆，"
                 "建立新的 LOG"
             )
 
-            print(
-                "=" * 100
-            )
+            print("=" * 100)
 
             current_log = (
                 create_log_file()
@@ -1603,10 +1755,7 @@ def visit_jobs(
             jobs_in_current_log = 0
 
         print()
-
-        print(
-            "=" * 100
-        )
+        print("=" * 100)
 
         print(
             f"[{idx}/{total_jobs}] "
@@ -1618,6 +1767,9 @@ def visit_jobs(
         )
 
         try:
+            print(
+                "  等待頁面與職缺詳細資料載入..."
+            )
 
             navigate_job_page(
                 page,
@@ -1625,26 +1777,21 @@ def visit_jobs(
                 timeout=30000
             )
 
-            initial_load_pause = random.uniform(
-                1.5,
-                3
-            )
+            try:
+                page.evaluate(
+                    "() => window.scrollTo(0, 0)"
+                )
+            except Exception:
+                pass
 
-            print(
-                f"  等待頁面載入..."
-                f"{initial_load_pause:.1f} 秒"
-            )
-
+            # 非主要等待機制，只留極短緩衝給 Vue DOM update。
             time.sleep(
-                initial_load_pause
+                0.3
             )
 
-            page.evaluate(
-                "() => window.scrollTo(0, 0)"
-            )
-
-            detail = extract_job_detail(
-                page
+            detail = extract_job_detail_with_retry(
+                page,
+                retry_count=2
             )
 
             job_name = detail[
@@ -1692,9 +1839,7 @@ def visit_jobs(
                 f"{salary}"
             )
 
-            print(
-                "=" * 100
-            )
+            print("=" * 100)
 
             write_job_log(
                 current_log,
@@ -1730,7 +1875,6 @@ def visit_jobs(
             )
 
         except Exception as e:
-
             print(
                 f"  瀏覽失敗："
                 f"{type(e).__name__}: "
@@ -1777,11 +1921,6 @@ def visit_jobs(
 
             jobs_in_current_log += 1
 
-        # -------------------------------------------------
-        # 定期要求 Chrome 做記憶體清理。
-        # 不開新 Tab、不切換 Page、不 bring_to_front()。
-        # -------------------------------------------------
-
         if (
                 memory_cleanup_interval > 0
                 and idx % memory_cleanup_interval == 0
@@ -1793,7 +1932,6 @@ def visit_jobs(
         count_since_break += 1
 
         if idx < total_jobs:
-
             short_break = random.uniform(
                 2,
                 5
@@ -1813,7 +1951,6 @@ def visit_jobs(
                 >= next_batch_target
                 and idx < total_jobs
         ):
-
             break_duration = random.uniform(
                 *long_break_range
             )
@@ -1848,19 +1985,9 @@ def visit_jobs(
 # =========================================================
 
 def main():
-
-    print(
-        "=" * 100
-    )
-
-    print(
-        "OOF Playwright 自動職缺瀏覽程式"
-    )
-
-    print(
-        "=" * 100
-    )
-
+    print("=" * 100)
+    print("OOF Playwright 自動職缺瀏覽程式")
+    print("=" * 100)
     print()
 
     print(
@@ -1880,7 +2007,6 @@ def main():
     )
 
     with sync_playwright() as playwright:
-
         browser, context = (
             attach_to_existing_chrome(
                 playwright
@@ -1891,19 +2017,10 @@ def main():
             "Chrome 連接成功"
         )
 
-        # -------------------------------------------------
-        # 直接使用目前 Chrome 的頁面。
-        #
-        # 不寫死 求職網 網址，
-        # 不使用 bring_to_front()，
-        # 避免主動把 Chrome 拉到最前面。
-        # -------------------------------------------------
-
         page = get_current_page(
             context
         )
 
-        # 搜尋列表階段也套用低記憶體設定。
         list_cdp_session = create_low_memory_cdp_session(
             context,
             page
@@ -1912,10 +2029,6 @@ def main():
         print(
             "開始收集職缺連結..."
         )
-
-        # -------------------------------------------------
-        # 使用搜尋列表分頁收集所有職缺 URL
-        # -------------------------------------------------
 
         job_links = collect_job_links(
             page,
@@ -1931,9 +2044,7 @@ def main():
         )
 
         if len(job_links) == 0:
-
             print()
-
             print(
                 "沒有收集到任何職缺。"
             )
@@ -1943,7 +2054,7 @@ def main():
             )
 
             print(
-                "1. 是否停留在 求職網 搜尋列表"
+                "1. 是否停留在求職網搜尋列表"
             )
 
             print(
@@ -1956,73 +2067,29 @@ def main():
 
             return
 
-        # =================================================
-        # 搜尋列表使用完畢
-        #
-        # 搜尋列表跑過大量 page= 分頁，
-        # 可能累積：
-        #
-        # DOM
-        # JavaScript Context
-        # Cache
-        # Renderer Memory
-        #
-        # 所以收集完後直接捨棄這個 Page。
-        # =================================================
-
         print()
-
-        print(
-            "=" * 100
-        )
-
-        print(
-            "職缺連結收集完成"
-        )
-
-        print(
-            "準備切換到新的瀏覽分頁..."
-        )
-
-        print(
-            "=" * 100
-        )
+        print("=" * 100)
+        print("職缺連結收集完成")
+        print("準備切換到新的瀏覽分頁...")
+        print("=" * 100)
 
         job_list_page = page
-
-        # -------------------------------------------------
-        # 只建立這一次新的 Page
-        #
-        # 後面的 1 ~ 1000 筆職缺，
-        # 全部使用同一個 Page。
-        # -------------------------------------------------
 
         page = context.new_page()
 
         try:
-
             page.goto(
                 "about:blank",
                 wait_until="commit",
                 timeout=10000
             )
-
         except Exception:
             pass
 
-        # 新的瀏覽 Page 是另一個 Target，必須重新建立 CDP Session
-        # 才能對它套用 cache / resource blocking / memory cleanup 設定。
         browse_cdp_session = create_low_memory_cdp_session(
             context,
             page
         )
-
-        # -------------------------------------------------
-        # 關閉原本搜尋列表 Page
-        #
-        # 讓 Chrome 有機會直接銷毀舊 Renderer，
-        # 釋放前面收集職缺時累積的記憶體。
-        # -------------------------------------------------
 
         try:
             try:
@@ -2037,23 +2104,17 @@ def main():
             )
 
         except Exception as e:
-
             print(
                 f"關閉原職缺列表分頁失敗："
                 f"{type(e).__name__}: "
                 f"{e}"
             )
 
-        # -------------------------------------------------
-        # 給 Chrome 一點時間處理舊 Renderer
-        # -------------------------------------------------
-
         time.sleep(
             2
         )
 
         print()
-
         print(
             "新的瀏覽分頁建立完成"
         )
@@ -2071,22 +2132,6 @@ def main():
         print(
             "開始逐一瀏覽職缺..."
         )
-
-        # -------------------------------------------------
-        # 後續：
-        #
-        # job1
-        #   ↓
-        # location.replace()
-        #   ↓
-        # job2
-        #   ↓
-        # location.replace()
-        #   ↓
-        # job3
-        #
-        # 始終使用相同 Page。
-        # -------------------------------------------------
 
         visit_jobs(
             page,
@@ -2107,23 +2152,15 @@ def main():
         )
 
         print()
-
-        print(
-            "=" * 100
-        )
-
-        print(
-            "全部瀏覽完成"
-        )
+        print("=" * 100)
+        print("全部瀏覽完成")
 
         print(
             f"LOG 位置："
             f"{LOG_DIR}"
         )
 
-        print(
-            "=" * 100
-        )
+        print("=" * 100)
 
 
 if __name__ == "__main__":
@@ -2131,43 +2168,28 @@ if __name__ == "__main__":
 
 
 # =========================================================
-# 安裝方式
-# =========================================================
-#
-# macOS:
-#
-#   若缺少 Playwright / PyYAML，程式啟動時會自動安裝。
-#
-# 因為這版是 connect_over_cdp() 接到已經開啟的 Google Chrome，
-# 通常不需要另外執行：
-#
-#   playwright install
-#
-#
-# =========================================================
 # Chrome 啟動方式
 # =========================================================
 #
 # macOS:
-r"""
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-   --remote-debugging-port=9333 \
-   --user-data-dir="$HOME/selenium-chrome-profile" \
-   --disable-features=BackForwardCache
-"""
+#
+# /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+#   --remote-debugging-port=9333 \
+#   --user-data-dir="$HOME/selenium-chrome-profile" \
+#   --disable-features=BackForwardCache
+#
 #
 # Windows PowerShell:
-r"""
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" `
-   --remote-debugging-port=9333 `
-   --user-data-dir="C:\Users\User\selenium-chrome-profile" `
-   --disable-features=BackForwardCache
-"""
+#
+# & "C:\Program Files\Google\Chrome\Application\chrome.exe" `
+#   --remote-debugging-port=9333 `
+#   --user-data-dir="C:\Users\User\selenium-chrome-profile" `
+#   --disable-features=BackForwardCache
+#
 #
 # 啟動後：
 #
-# 1. 手動開 求職網 搜尋頁
+# 1. 手動開求職網搜尋頁
 # 2. 手動通過 Cloudflare
 # 3. 執行這支 Python
 #
-# =========================================================
