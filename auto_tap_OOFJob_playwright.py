@@ -1077,7 +1077,7 @@ def extract_row_value(
         labels
 ):
     """
-    優先直接從 104 詳細頁的 list-row 結構取得欄位。
+    優先直接從 求職網 詳細頁的 list-row 結構取得欄位。
 
     結構大致為：
         .list-row

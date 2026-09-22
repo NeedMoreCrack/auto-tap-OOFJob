@@ -1725,7 +1725,7 @@ def extract_row_value(
     """
     優先直接從詳細頁 .list-row 結構取得欄位值。
 
-    104 目前大致為：
+    求職網 目前大致為：
 
         .list-row
             h3
