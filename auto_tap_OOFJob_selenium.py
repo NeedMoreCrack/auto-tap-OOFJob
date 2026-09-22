@@ -117,6 +117,8 @@ import yaml
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.common.exceptions import TimeoutException
 
 
 
@@ -266,6 +268,13 @@ MEMORY_CLEANUP_INTERVAL = 20
 
 # 阻擋對職缺文字解析沒有必要、但容易增加 Chrome RAM 的大型資源。
 BLOCK_HEAVY_RESOURCES = True
+
+# 詳細頁等待設定
+JOB_DETAIL_WAIT_TIMEOUT = 15
+JOB_DETAIL_RETRY_COUNT = 2
+
+# True 時會輸出目前分頁前景 / 背景、readyState、DOM 大小等資訊。
+DEBUG_PAGE_STATE = True
 
 # log 資料夾
 LOG_DIR = SCRIPT_DIR / "log"
@@ -520,6 +529,254 @@ def cleanup_browser_memory(driver):
         )
     except Exception:
         pass
+
+
+def get_page_state(driver):
+    """
+    回傳目前分頁狀態。
+
+    用來確認 Chrome 放在背景時：
+    - document.hasFocus()
+    - document.hidden
+    - document.visibilityState
+    - document.readyState
+    - DOM 文字 / HTML 大小
+    """
+
+    try:
+        return driver.execute_script(
+            """
+            return {
+                hasFocus: document.hasFocus(),
+                hidden: document.hidden,
+                visibilityState: document.visibilityState,
+                readyState: document.readyState,
+                bodyTextLength:
+                    document.body && document.body.textContent
+                        ? document.body.textContent.length
+                        : 0,
+                bodyHtmlLength:
+                    document.body && document.body.innerHTML
+                        ? document.body.innerHTML.length
+                        : 0
+            };
+            """
+        )
+
+    except Exception:
+        return {}
+
+
+def print_page_state(driver):
+    """
+    印出目前 Page 狀態。
+    """
+
+    if not DEBUG_PAGE_STATE:
+        return
+
+    state = get_page_state(
+        driver
+    )
+
+    if not state:
+        print(
+            "  無法取得 Page 狀態"
+        )
+        return
+
+    print(
+        "  Page 狀態："
+        f"focus={state.get('hasFocus')}、"
+        f"hidden={state.get('hidden')}、"
+        f"visibility={state.get('visibilityState')}、"
+        f"readyState={state.get('readyState')}、"
+        f"textLength={state.get('bodyTextLength')}、"
+        f"htmlLength={state.get('bodyHtmlLength')}"
+    )
+
+
+def wait_for_document_complete(
+        driver,
+        timeout=30
+):
+    """
+    等 document.readyState == complete。
+
+    driver.get() 一般會等待 load，
+    但接既有 Chrome + 動態網站時仍保留這層檢查。
+    """
+
+    try:
+        WebDriverWait(
+            driver,
+            timeout,
+            poll_frequency=0.2
+        ).until(
+            lambda d: d.execute_script(
+                "return document.readyState"
+            ) == "complete"
+        )
+
+        return True
+
+    except TimeoutException:
+        print(
+            "  document.readyState 等待逾時，"
+            "繼續等待職缺內容"
+        )
+
+        return False
+
+
+def get_job_detail_labels(driver):
+    """
+    從目前 DOM 找出已經存在的主要職缺欄位名稱。
+
+    不使用 element.is_displayed()，
+    因為爬資料只需要 DOM 已存在，
+    不需要分頁真的在前景顯示。
+    """
+
+    labels = driver.execute_script(
+        """
+        const wanted = new Set([
+            '工作待遇',
+            '上班地點',
+            '工作地點',
+            '學歷要求'
+        ]);
+
+        return Array.from(
+            document.querySelectorAll('h3')
+        )
+        .map(el => (el.textContent || '').trim())
+        .filter(text => wanted.has(text));
+        """
+    )
+
+    return set(
+        labels or []
+    )
+
+
+def wait_for_job_detail(
+        driver,
+        timeout=JOB_DETAIL_WAIT_TIMEOUT
+):
+    """
+    等待職缺詳細資料真正進入 DOM。
+
+    判斷方式：
+    「工作待遇 / 上班地點(工作地點) / 學歷要求」
+    三組主要資料至少出現兩組。
+
+    不再依賴固定 sleep 1.5~3 秒。
+    """
+
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+
+        try:
+            labels = get_job_detail_labels(
+                driver
+            )
+
+            groups = 0
+
+            if "工作待遇" in labels:
+                groups += 1
+
+            if (
+                    "上班地點" in labels
+                    or "工作地點" in labels
+            ):
+                groups += 1
+
+            if "學歷要求" in labels:
+                groups += 1
+
+            if groups >= 2:
+
+                print(
+                    "  職缺詳細資料已進入 DOM："
+                    + "、".join(
+                        sorted(labels)
+                    )
+                )
+
+                return True
+
+        except Exception:
+            pass
+
+        time.sleep(
+            0.2
+        )
+
+    print(
+        "  警告：等待職缺詳細資料逾時"
+    )
+
+    return False
+
+
+def navigate_job_page(
+        driver,
+        href,
+        timeout=30
+):
+    """
+    開啟職缺頁並等待真正可解析的內容。
+
+    流程：
+    1. driver.get()
+    2. document.readyState == complete
+    3. 等職缺主要欄位進 DOM
+    4. 印出前景 / 背景與 DOM 狀態
+    """
+
+    old_page_load_timeout = None
+
+    try:
+        driver.set_page_load_timeout(
+            timeout
+        )
+
+        driver.get(
+            href
+        )
+
+    except TimeoutException:
+        print(
+            "  頁面載入逾時，"
+            "繼續檢查目前 DOM"
+        )
+
+    finally:
+        # Selenium 沒有 getter 可可靠取得原本值；
+        # 後續統一恢復為常用的 30 秒。
+        try:
+            driver.set_page_load_timeout(
+                30
+            )
+        except Exception:
+            pass
+
+    wait_for_document_complete(
+        driver,
+        timeout=timeout
+    )
+
+    wait_for_job_detail(
+        driver,
+        timeout=JOB_DETAIL_WAIT_TIMEOUT
+    )
+
+    print_page_state(
+        driver
+    )
 
 
 # 使用目前分頁
@@ -1363,29 +1620,45 @@ def safe_get_text(
     """
     依序嘗試多個 CSS Selector。
 
-    找到第一個有文字的元素就回傳。
+    使用 JavaScript textContent，
+    不使用 WebElement.text，
+    避免背景分頁 rendering 狀態影響。
     """
 
     for selector in selectors:
 
         try:
 
-            elements = driver.find_elements(
-                By.CSS_SELECTOR,
+            values = driver.execute_script(
+                """
+                const selector = arguments[0];
+
+                return Array.from(
+                    document.querySelectorAll(selector)
+                ).map(
+                    el => el.textContent || ''
+                );
+                """,
                 selector
             )
 
-            for element in elements:
+            for value in values or []:
 
-                text = clean_text(
-                    element.text
+                value = clean_text(
+                    value
                 )
 
-                if text:
+                if value:
+                    return value
 
-                    return text
+        except Exception as e:
 
-        except Exception:
+            if DEBUG_PAGE_STATE:
+                print(
+                    f"  safe_get_text 失敗："
+                    f"selector={selector}、"
+                    f"{type(e).__name__}: {e}"
+                )
 
             continue
 
@@ -1398,19 +1671,25 @@ def safe_get_text(
 
 def get_page_lines(driver):
     """
-    將整個 求職網 職缺頁面拆成一行一行文字。
+    將整個職缺頁面的 DOM 文字拆成一行一行。
 
-    主要作為 selector 抓不到資料時的備援。
+    使用 document.body.textContent，
+    不使用 body.text，
+    避免依賴畫面實際 rendering。
     """
 
     try:
 
-        body = driver.find_element(
-            By.TAG_NAME,
-            "body"
+        text = driver.execute_script(
+            """
+            return document.body
+                ? (document.body.textContent || '')
+                : '';
+            """
         )
 
-        text = body.text
+        if not text:
+            return []
 
         lines = []
 
@@ -1428,9 +1707,101 @@ def get_page_lines(driver):
 
         return lines
 
-    except Exception:
+    except Exception as e:
+
+        print(
+            f"  取得頁面文字失敗："
+            f"{type(e).__name__}: {e}"
+        )
 
         return []
+
+
+
+def extract_row_value(
+        driver,
+        labels
+):
+    """
+    優先直接從詳細頁 .list-row 結構取得欄位值。
+
+    104 目前大致為：
+
+        .list-row
+            h3
+            .list-row__data
+
+    若找不到再由上層 fallback 到全文文字解析。
+    """
+
+    try:
+
+        value = driver.execute_script(
+            """
+            const labels = arguments[0];
+
+            const rows = Array.from(
+                document.querySelectorAll('.list-row')
+            );
+
+            for (const label of labels) {
+
+                for (const row of rows) {
+
+                    const head = row.querySelector('h3');
+
+                    if (!head) {
+                        continue;
+                    }
+
+                    const headText = (
+                        head.textContent || ''
+                    ).trim();
+
+                    if (headText !== label) {
+                        continue;
+                    }
+
+                    const data = row.querySelector(
+                        '.list-row__data'
+                    );
+
+                    if (!data) {
+                        continue;
+                    }
+
+                    const value = (
+                        data.textContent || ''
+                    )
+                    .replace(/\\s+/g, ' ')
+                    .trim();
+
+                    if (value) {
+                        return value;
+                    }
+                }
+            }
+
+            return null;
+            """,
+            labels
+        )
+
+        value = clean_text(
+            value
+        )
+
+        return value or None
+
+    except Exception as e:
+
+        if DEBUG_PAGE_STATE:
+            print(
+                f"  extract_row_value 失敗："
+                f"{type(e).__name__}: {e}"
+            )
+
+        return None
 
 
 def extract_value_after_label(
@@ -1681,7 +2052,21 @@ def extract_job_location(
 ):
     """
     抓工作地點。
+
+    優先直接讀 DOM row，
+    找不到再使用全文 label fallback。
     """
+
+    value = extract_row_value(
+        driver,
+        [
+            "上班地點",
+            "工作地點"
+        ]
+    )
+
+    if value:
+        return value
 
     value = extract_value_after_label(
         lines,
@@ -1691,12 +2076,7 @@ def extract_job_location(
         ]
     )
 
-    if value:
-
-        return value
-
-    return "未取得"
-
+    return value or "未取得"
 
 # =========================================================
 # 學歷要求
@@ -1710,6 +2090,17 @@ def extract_education(
     抓學歷要求。
     """
 
+    value = extract_row_value(
+        driver,
+        [
+            "學歷要求",
+            "學歷"
+        ]
+    )
+
+    if value:
+        return value
+
     value = extract_value_after_label(
         lines,
         [
@@ -1718,12 +2109,7 @@ def extract_education(
         ]
     )
 
-    if value:
-
-        return value
-
-    return "未取得"
-
+    return value or "未取得"
 
 # =========================================================
 # 薪資
@@ -1737,6 +2123,18 @@ def extract_salary(
     抓工作待遇 / 薪資。
     """
 
+    value = extract_row_value(
+        driver,
+        [
+            "工作待遇",
+            "薪資待遇",
+            "薪資"
+        ]
+    )
+
+    if value:
+        return value
+
     value = extract_value_after_label(
         lines,
         [
@@ -1746,12 +2144,7 @@ def extract_salary(
         ]
     )
 
-    if value:
-
-        return value
-
-    return "未取得"
-
+    return value or "未取得"
 
 # =========================================================
 # 技術
@@ -1762,57 +2155,60 @@ def extract_technologies(
         lines
 ):
     """
-    求職網 上技術相關資訊通常可能存在：
+    擷取擅長工具 + 工作技能。
 
-    擅長工具
-    工作技能
-
-    所以兩個都抓，
-    最後合併。
+    優先 DOM row，
+    找不到才使用全文文字 fallback。
     """
 
     technologies = []
 
-    # =============================================
-    # 擅長工具
-    # =============================================
-
-    tools = extract_multi_value_after_label(
-        lines,
+    tools = extract_row_value(
+        driver,
         [
             "擅長工具",
             "電腦專長"
-        ],
-        max_lines=5
+        ]
     )
 
-    if tools:
+    if not tools:
+        tools = extract_multi_value_after_label(
+            lines,
+            [
+                "擅長工具",
+                "電腦專長"
+            ],
+            max_lines=5
+        )
 
+    if tools:
         technologies.append(
             tools
         )
 
-    # =============================================
-    # 工作技能
-    # =============================================
-
-    skills = extract_multi_value_after_label(
-        lines,
+    skills = extract_row_value(
+        driver,
         [
             "工作技能"
-        ],
-        max_lines=5
+        ]
     )
 
-    if skills:
+    if not skills:
+        skills = extract_multi_value_after_label(
+            lines,
+            [
+                "工作技能"
+            ],
+            max_lines=5
+        )
 
+    if skills:
         technologies.append(
             skills
         )
 
     if technologies:
 
-        # 去除完全重複
         unique_values = []
 
         for value in technologies:
@@ -1828,7 +2224,6 @@ def extract_technologies(
         )
 
     return "未取得"
-
 
 # =========================================================
 # 一次取得完整職缺資訊
@@ -1883,6 +2278,87 @@ def extract_job_detail(
         "education": education,
         "salary": salary,
     }
+
+
+def count_missing_detail_fields(
+        detail
+):
+    """
+    職缺名稱不納入判斷。
+
+    回傳：
+    location / technologies / education / salary
+    有幾個未取得。
+    """
+
+    keys = [
+        "location",
+        "technologies",
+        "education",
+        "salary",
+    ]
+
+    return sum(
+        1
+        for key in keys
+        if not detail.get(key)
+        or detail.get(key) == "未取得"
+    )
+
+
+def extract_job_detail_with_retry(
+        driver,
+        retry_count=JOB_DETAIL_RETRY_COUNT
+):
+    """
+    如果四個主要欄位有 3 個以上未取得，
+    視為頁面可能仍未 render 完成。
+
+    重新等待 DOM 後再抓，
+    最多 retry_count 次。
+    """
+
+    for attempt in range(
+            retry_count + 1
+    ):
+
+        detail = extract_job_detail(
+            driver
+        )
+
+        missing_count = (
+            count_missing_detail_fields(
+                detail
+            )
+        )
+
+        if missing_count < 3:
+            return detail
+
+        if attempt >= retry_count:
+            return detail
+
+        print(
+            f"  詳細資料不足 "
+            f"({missing_count}/4 未取得)，"
+            f"第 {attempt + 1} 次重新等待後再讀取..."
+        )
+
+        print_page_state(
+            driver
+        )
+
+        wait_for_job_detail(
+            driver,
+            timeout=8
+        )
+
+        time.sleep(
+            0.3
+        )
+
+    return detail
+
 
 def wait_for_new_content(
         driver,
@@ -2138,7 +2614,7 @@ def visit_jobs(
     ):
 
         # =========================================
-        # 每 50 筆建立新 LOG
+        # 每 LOG_MAX_JOBS 筆建立新 LOG
         # =========================================
 
         if jobs_in_current_log >= LOG_MAX_JOBS:
@@ -2191,42 +2667,43 @@ def visit_jobs(
             # 不建立新分頁、不關閉分頁、不切換分頁。
             # =====================================
 
-            driver.get(
-                href
-            )
-
-            # =====================================
-            # 等待初步載入
-            # =====================================
-
-            initial_load_pause = random.uniform(
-                1.5,
-                3
-            )
-
             print(
-                f"  等待頁面載入..."
-                f"{initial_load_pause:.1f} 秒"
+                "  等待頁面與職缺詳細資料載入..."
             )
 
-            time.sleep(
-                initial_load_pause
+            navigate_job_page(
+                driver,
+                href,
+                timeout=30
             )
 
             # =====================================
             # 確保從頁面頂部開始
             # =====================================
 
-            driver.execute_script(
-                "window.scrollTo(0, 0);"
+            try:
+                driver.execute_script(
+                    "window.scrollTo(0, 0);"
+                )
+            except Exception:
+                pass
+
+            # 非主要等待機制，只保留極短緩衝，
+            # 給 Vue / DOM update queue 收尾。
+            time.sleep(
+                0.3
             )
 
             # =====================================
             # 抓取職缺詳細資料
+            #
+            # 若 4 個主要欄位有 3 個以上未取得，
+            # 會自動重新等待並 retry。
             # =====================================
 
-            detail = extract_job_detail(
-                driver
+            detail = extract_job_detail_with_retry(
+                driver,
+                retry_count=JOB_DETAIL_RETRY_COUNT
             )
 
             job_name = (
@@ -2331,20 +2808,6 @@ def visit_jobs(
                 "  瀏覽完成"
             )
 
-            # =====================================
-            # 定期清理 Chrome 記憶體
-            #
-            # 不開新分頁、不關閉分頁、不切換分頁。
-            # =====================================
-
-            if (
-                    MEMORY_CLEANUP_INTERVAL > 0
-                    and idx % MEMORY_CLEANUP_INTERVAL == 0
-            ):
-                cleanup_browser_memory(
-                    driver
-                )
-
         except Exception as e:
 
             print(
@@ -2397,6 +2860,20 @@ def visit_jobs(
 
             # 失敗也算一筆
             jobs_in_current_log += 1
+
+        # =========================================
+        # 定期清理 Chrome 記憶體
+        #
+        # 成功 / 失敗都會計算。
+        # =========================================
+
+        if (
+                MEMORY_CLEANUP_INTERVAL > 0
+                and idx % MEMORY_CLEANUP_INTERVAL == 0
+        ):
+            cleanup_browser_memory(
+                driver
+            )
 
         # =========================================
         # 單筆瀏覽之間隨機等待
