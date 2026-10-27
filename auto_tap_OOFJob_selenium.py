@@ -840,6 +840,77 @@ def get_current_page(driver):
     return current_handle
 
 
+
+# =========================================================
+# 登入狀態檢查與自動恢復
+# =========================================================
+
+AUTH_LOGIN_SELECTOR = '.bar__personal .personal__toggle-button[data-gtm-ngb="PC_已登"]'
+AUTH_LOGOUT_SELECTOR = '.bar__personal .personal__toggle-button[data-gtm-ngb="PC_未登"]'
+
+class AuthRecoveryError(RuntimeError):
+    """網站登入狀態無法自動恢復，安全中止流程。"""
+
+class AuthRetryRequired(RuntimeError):
+    """瀏覽途中登出，恢復後需要重做當前職缺。"""
+
+def inspect_auth_state(driver):
+    """僅使用頁首明確標記，不將未知狀態視為已登入。"""
+    return driver.execute_script("""
+        const personal = document.querySelector('.bar__personal');
+        if (!personal) return 'unknown';
+        const toggle = personal.querySelector('.personal__toggle-button');
+        if (!toggle) return 'unknown';
+        const value = toggle.getAttribute('data-gtm-ngb');
+        if (value === 'PC_已登') return 'logged_in';
+        if (value === 'PC_未登') return 'logged_out';
+        return 'unknown';
+    """)
+
+def wait_for_auth_state(driver, timeout=12):
+    """等 Vue 頁首載入；unknown 不當作 logged_in。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = inspect_auth_state(driver)
+        if state != 'unknown':
+            return state
+        time.sleep(0.5)
+    return 'unknown'
+
+def ensure_logged_in(driver, timeout=60):
+    """登出後只點擊一次『登入/註冊』，輪詢直到確認已登入。"""
+    state = wait_for_auth_state(driver)
+    if state == 'logged_in':
+        return False
+    if state == 'unknown':
+        raise AuthRecoveryError('頁首不存在或登入狀態未知，已停止避免誤判。')
+
+    print('  偵測到 PC_未登，自動點擊登入/註冊...')
+    try:
+        button = WebDriverWait(driver, 8, poll_frequency=0.25).until(
+            lambda d: next((el for el in d.find_elements(By.CSS_SELECTOR, AUTH_LOGOUT_SELECTOR)
+                            if el.is_displayed() and el.is_enabled()), None)
+        )
+        button.click()
+    except Exception as exc:
+        # 有些情況網站點擊前就自行恢復登入
+        if inspect_auth_state(driver) != 'logged_in':
+            raise AuthRecoveryError(f'無法點擊登入/註冊：{exc}') from exc
+
+    deadline = time.monotonic() + timeout
+    stable = 0
+    while time.monotonic() < deadline:
+        state = inspect_auth_state(driver)
+        if state == 'logged_in':
+            stable += 1
+            if stable >= 2:
+                print('  已連續確認 PC_已登，恢復自動瀏覽。')
+                return True
+        else:
+            stable = 0
+        time.sleep(1.5)
+    raise AuthRecoveryError('點擊登入/註冊後 60 秒仍未確認 PC_已登，停止執行。')
+
 # =========================================================
 # 求職網 職缺列表
 # =========================================================
@@ -1333,6 +1404,7 @@ def collect_job_links(
         driver.title
     )
 
+    ensure_logged_in(driver)
     base_url = driver.current_url
 
     start_page = get_page_number(
@@ -1392,6 +1464,8 @@ def collect_job_links(
             f"{len(seen)}/{max_jobs} 筆"
         )
 
+        ensure_logged_in(driver)
+
         # =============================================
         # 只有 URL 不同時才切頁
         # =============================================
@@ -1423,6 +1497,11 @@ def collect_job_links(
                     break
 
                 continue
+
+        # 網頁導航後可能被登出；恢復後重新載入同一搜尋頁。
+        if ensure_logged_in(driver):
+            driver.get(target_url)
+            ensure_logged_in(driver)
 
         # =============================================
         # 等職缺卡片出現
@@ -1472,6 +1551,11 @@ def collect_job_links(
         # =============================================
         # 一次從 DOM 抓完整頁 job_no / href
         # =============================================
+
+        if ensure_logged_in(driver):
+            driver.get(target_url)
+            if wait_for_job_cards(driver, timeout=10) is None:
+                raise AuthRecoveryError('重新登入後，職缺列表無法載入。')
 
         jobs = extract_jobs_from_current_page(
             driver
@@ -2443,6 +2527,8 @@ def simulate_reading(
     )
 
     while elapsed < total_duration:
+        if inspect_auth_state(driver) == 'logged_out':
+            raise AuthRetryRequired('閱讀職缺途中已登出')
 
         action = random.choices(
 
@@ -2656,209 +2742,141 @@ def visit_jobs(
         )
 
         try:
-
-            # =====================================
-            # 使用目前同一個 Tab 開啟職缺。
-            #
-            # 使用 driver.get() 讓 Selenium / ChromeDriver
-            # 正常等待 navigation 完成，避免用 location.replace()
-            # 造成頁面切換期間的 execution context / readyState race。
-            #
-            # 不建立新分頁、不關閉分頁、不切換分頁。
-            # =====================================
-
-            print(
-                "  等待頁面與職缺詳細資料載入..."
-            )
-
-            navigate_job_page(
-                driver,
-                href,
-                timeout=30
-            )
-
-            # =====================================
-            # 確保從頁面頂部開始
-            # =====================================
-
-            try:
-                driver.execute_script(
-                    "window.scrollTo(0, 0);"
+            # 登出時自動登入，重做同一筆最多 2 次，不直接跳過。
+            for auth_attempt in range(3):
+                ensure_logged_in(driver) if inspect_auth_state(driver) != 'unknown' else None
+                print('  等待頁面與職缺詳細資料載入...')
+                navigate_job_page(driver, href, timeout=30)
+                if ensure_logged_in(driver):
+                    print('  已恢復登入，重新載入當前職缺。')
+                    continue
+                driver.execute_script('window.scrollTo(0, 0);')
+                time.sleep(0.3)
+                detail = extract_job_detail_with_retry(
+                    driver, retry_count=JOB_DETAIL_RETRY_COUNT
                 )
-            except Exception:
-                pass
+                if inspect_auth_state(driver) == 'logged_out':
+                    if auth_attempt >= 2:
+                        raise AuthRecoveryError('當前職缺反覆登出，已停止。')
+                    ensure_logged_in(driver)
+                    continue
+                if inspect_auth_state(driver) != 'logged_in':
+                    raise AuthRecoveryError('職缺頁無法確認登入狀態。')
+                job_name = (
+                    detail["job_name"]
+                )
 
-            # 非主要等待機制，只保留極短緩衝，
-            # 給 Vue / DOM update queue 收尾。
-            time.sleep(
-                0.3
-            )
+                location = (
+                    detail["location"]
+                )
 
-            # =====================================
-            # 抓取職缺詳細資料
-            #
-            # 若 4 個主要欄位有 3 個以上未取得，
-            # 會自動重新等待並 retry。
-            # =====================================
+                technologies = (
+                    detail["technologies"]
+                )
 
-            detail = extract_job_detail_with_retry(
-                driver,
-                retry_count=JOB_DETAIL_RETRY_COUNT
-            )
+                education = (
+                    detail["education"]
+                )
 
-            job_name = (
-                detail["job_name"]
-            )
+                salary = (
+                    detail["salary"]
+                )
 
-            location = (
-                detail["location"]
-            )
+                # =====================================
+                # Console 顯示
+                # =====================================
 
-            technologies = (
-                detail["technologies"]
-            )
+                print(
+                    f"職缺名稱："
+                    f"{job_name}"
+                )
 
-            education = (
-                detail["education"]
-            )
+                print(
+                    f"工作地點："
+                    f"{location}"
+                )
 
-            salary = (
-                detail["salary"]
-            )
+                print(
+                    f"需要技術："
+                    f"{technologies}"
+                )
 
-            # =====================================
-            # Console 顯示
-            # =====================================
+                print(
+                    f"學歷限制："
+                    f"{education}"
+                )
 
-            print(
-                f"職缺名稱："
-                f"{job_name}"
-            )
+                print(
+                    f"薪資範圍："
+                    f"{salary}"
+                )
 
-            print(
-                f"工作地點："
-                f"{location}"
-            )
+                print(
+                    "=" * 100
+                )
 
-            print(
-                f"需要技術："
-                f"{technologies}"
-            )
+                # 完成閱讀且仍登入才寫入成功 LOG，避免未完成就計入。
+                try:
+                    simulate_reading(driver, view_duration_range)
+                except AuthRetryRequired:
+                    if auth_attempt >= 2:
+                        raise AuthRecoveryError('閱讀途中反覆登出，已停止。')
+                    ensure_logged_in(driver)
+                    continue
+                if inspect_auth_state(driver) != 'logged_in':
+                    if auth_attempt >= 2:
+                        raise AuthRecoveryError('閱讀結束時登入狀態異常，已停止。')
+                    ensure_logged_in(driver)
+                    continue
+                write_job_log(
 
-            print(
-                f"學歷限制："
-                f"{education}"
-            )
+                    current_log,
 
-            print(
-                f"薪資範圍："
-                f"{salary}"
-            )
+                    job_no=job_no,
 
-            print(
-                "=" * 100
-            )
+                    job_name=job_name,
 
-            # =====================================
-            # 寫入 LOG
-            # =====================================
+                    location=location,
 
-            write_job_log(
+                    technologies=technologies,
 
-                current_log,
+                    education=education,
 
-                job_no=job_no,
+                    salary=salary,
 
-                job_name=job_name,
+                    href=href
+                )
 
-                location=location,
+                jobs_in_current_log += 1
 
-                technologies=technologies,
+                print(
+                    f"  已寫入 LOG："
+                    f"{current_log.name}"
+                )
 
-                education=education,
+                print(
+                    f"  此 LOG 已有 "
+                    f"{jobs_in_current_log}/"
+                    f"{LOG_MAX_JOBS} 筆"
+                )
 
-                salary=salary,
+                print('  瀏覽完成')
+                break
+            else:
+                raise AuthRecoveryError('多次登入恢復後仍無法完成職缺。')
 
-                href=href
-            )
-
-            jobs_in_current_log += 1
-
-            print(
-                f"  已寫入 LOG："
-                f"{current_log.name}"
-            )
-
-            print(
-                f"  此 LOG 已有 "
-                f"{jobs_in_current_log}/"
-                f"{LOG_MAX_JOBS} 筆"
-            )
-
-            # =====================================
-            # 模擬閱讀
-            # =====================================
-
-            simulate_reading(
-                driver,
-                view_duration_range
-            )
-
-            print(
-                "  瀏覽完成"
-            )
-
+        except AuthRecoveryError:
+            # 登入失敗不能被一般錯誤處理吞掉，防止跳過後繼續執行。
+            raise
         except Exception as e:
-
-            print(
-                f"  瀏覽失敗："
-                f"{type(e).__name__}: "
-                f"{e}"
-            )
-
-            # =====================================
-            # 失敗資訊也寫 LOG
-            # =====================================
-
-            write_log(
-                current_log,
-                "=" * 100
-            )
-
-            write_log(
-                current_log,
-                f"職缺編號：{job_no}"
-            )
-
-            write_log(
-                current_log,
-                f"職缺網址：{href}"
-            )
-
-            write_log(
-                current_log,
-                "狀態：讀取失敗"
-            )
-
-            write_log(
-                current_log,
-                (
-                    f"錯誤："
-                    f"{type(e).__name__}: "
-                    f"{e}"
-                )
-            )
-
-            write_log(
-                current_log,
-                "=" * 100
-            )
-
-            write_log(
-                current_log
-            )
-
-            # 失敗也算一筆
+            print(f'  瀏覽失敗：{type(e).__name__}: {e}')
+            write_log(current_log, '=' * 100)
+            write_log(current_log, f'職缺編號：{job_no}')
+            write_log(current_log, f'職缺網址：{href}')
+            write_log(current_log, '狀態：讀取失敗')
+            write_log(current_log, f'錯誤：{type(e).__name__}: {e}')
+            write_log(current_log, '=' * 100)
+            write_log(current_log)
             jobs_in_current_log += 1
 
         # =========================================

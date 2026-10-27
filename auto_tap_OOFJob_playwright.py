@@ -190,6 +190,11 @@ MAX_PAGES = CONFIG["max_pages"]
 
 MEMORY_CLEANUP_INTERVAL = 20
 
+# 點擊登入入口後等待網站自行恢復登入；逾時停止，避免記錄錯誤職缺。
+AUTH_WAIT_SECONDS = 60
+AUTH_CHECK_SECONDS = 1.5
+AUTH_RETRY_PER_JOB = 2
+
 # 開啟後會印出背景 / 前景、readyState、DOM 長度等資訊。
 DEBUG_PAGE_STATE = True
 
@@ -620,6 +625,98 @@ def navigate_job_page(
 
 
 # =========================================================
+# 登入狀態監控（僅操作網站原本登入流程）
+# =========================================================
+
+class AuthenticationTimeout(RuntimeError):
+    """登入未完成：立即停止，保留已有 LOG。"""
+
+
+class AuthenticationInterrupted(RuntimeError):
+    """瀏覽途中登出：重新登入後重試同一筆。"""
+
+
+def inspect_auth_state(page):
+    """依據實際已登入／未登入頁首 HTML 判斷狀態。
+
+    僅接受 data-gtm-ngb 精確標記，避免把使用者名稱或隱藏選單
+    文字當成登入成功。Vue 尚未載入頁首時回傳 unknown。
+    """
+    try:
+        return page.evaluate("""() => {
+            const bar = document.querySelector('.personal.bar__personal');
+            if (!bar) return 'unknown';
+            const toggle = bar.querySelector('.personal__toggle-button');
+            if (!toggle) return 'unknown';
+            const marker = toggle.getAttribute('data-gtm-ngb');
+            if (marker === 'PC_已登') return 'logged_in';
+            if (marker === 'PC_未登') return 'logged_out';
+            return 'unknown';
+        }""")
+    except Exception:
+        return 'unknown'
+
+
+def click_login_entry(page):
+    """僅點擊頁首「登入/註冊」一次，自行完成登入。"""
+    button = page.locator(
+        '.bar__personal .personal__toggle-button[data-gtm-ngb="PC_未登"]'
+    ).first
+    if button.count() == 0:
+        return False
+    try:
+        button.click(timeout=5000)
+        print('  已自動點擊「登入/註冊」，等待網站恢復登入...')
+        return True
+    except Exception as e:
+        print(f'  點擊登入入口失敗：{type(e).__name__}: {e}')
+        return False
+
+
+def ensure_logged_in(page, context, *, deadline_seconds=AUTH_WAIT_SECONDS):
+    """未登入時自動點擊一次；確認 PC_已登後才恢復處理職缺。"""
+    state = inspect_auth_state(page)
+    if state == 'logged_in':
+        return
+    if state == 'unknown':
+        for _ in range(8):
+            time.sleep(0.5)
+            state = inspect_auth_state(page)
+            if state != 'unknown':
+                break
+    if state == 'logged_in':
+        return
+    if state == 'unknown':
+        raise AuthenticationTimeout('頁首登入狀態不明，已安全停止。')
+
+    print('  偵測到未登入，嘗試點擊登入入口自動恢復...')
+    if not click_login_entry(page):
+        raise AuthenticationTimeout('找不到可點擊的「登入/註冊」，已安全停止。')
+
+    deadline = time.monotonic() + deadline_seconds
+    confirmed = 0
+    while time.monotonic() < deadline:
+        state = inspect_auth_state(page)
+        if state == 'logged_in':
+            confirmed += 1
+            if confirmed >= 2:
+                print('  已確認 PC_已登，恢復原本職缺處理。')
+                return
+        else:
+            confirmed = 0
+        time.sleep(AUTH_CHECK_SECONDS)
+
+    raise AuthenticationTimeout(
+        '點擊後仍未在期限內確認 PC_已登，已停止處理；請檢查是否要求額外驗證。'
+    )
+
+
+def check_auth_during_reading(page):
+    if inspect_auth_state(page) == 'logged_out':
+        raise AuthenticationInterrupted('閱讀期間偵測到登出')
+
+
+# =========================================================
 # URL / 分頁
 # =========================================================
 
@@ -881,6 +978,7 @@ def collect_job_links(
             f"{len(seen)}/{max_jobs} 筆"
         )
 
+        ensure_logged_in(page, page.context)
         if page.url != target_url:
             try:
                 page.goto(
@@ -895,6 +993,10 @@ def collect_job_links(
                     "但繼續檢查目前 DOM"
                 )
 
+        ensure_logged_in(page, page.context)
+        if page.url != target_url:
+            page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+            ensure_logged_in(page, page.context)
         selector = wait_for_job_cards(
             page,
             timeout=10000
@@ -926,6 +1028,10 @@ def collect_job_links(
             )
         )
 
+        ensure_logged_in(page, page.context)
+        if page.url != target_url:
+            page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+            wait_for_job_cards(page, timeout=10000)
         jobs = extract_jobs_from_current_page(
             page
         )
@@ -1632,6 +1738,7 @@ def simulate_reading(
     )
 
     while elapsed < total_duration:
+        check_auth_during_reading(page)
         action = random.choices(
             [
                 "scroll_down",
@@ -1767,113 +1874,130 @@ def visit_jobs(
         )
 
         try:
-            print(
-                "  等待頁面與職缺詳細資料載入..."
-            )
+            for auth_attempt in range(AUTH_RETRY_PER_JOB + 1):
+                try:
+                    if page.url != "about:blank":
+                        ensure_logged_in(page, page.context)
+                    print(
+                        "  等待頁面與職缺詳細資料載入..."
+                    )
 
-            navigate_job_page(
-                page,
-                href,
-                timeout=30000
-            )
+                    navigate_job_page(
+                        page,
+                        href,
+                        timeout=30000
+                    )
 
-            try:
-                page.evaluate(
-                    "() => window.scrollTo(0, 0)"
-                )
-            except Exception:
-                pass
+                    try:
+                        page.evaluate(
+                            "() => window.scrollTo(0, 0)"
+                        )
+                    except Exception:
+                        pass
 
-            # 非主要等待機制，只留極短緩衝給 Vue DOM update。
-            time.sleep(
-                0.3
-            )
+                    # 非主要等待機制，只留極短緩衝給 Vue DOM update。
+                    time.sleep(
+                        0.3
+                    )
 
-            detail = extract_job_detail_with_retry(
-                page,
-                retry_count=2
-            )
+                    ensure_logged_in(page, page.context)
+                    if (urlsplit(page.url).hostname or '').endswith('104.com.tw') is False or '/login' in urlsplit(page.url).path.lower():
+                        raise AuthenticationInterrupted('登入後仍停在非職缺頁，重新讀取職缺')
+                    detail = extract_job_detail_with_retry(
+                        page,
+                        retry_count=2
+                    )
 
-            job_name = detail[
-                "job_name"
-            ]
+                    job_name = detail[
+                        "job_name"
+                    ]
 
-            location = detail[
-                "location"
-            ]
+                    location = detail[
+                        "location"
+                    ]
 
-            technologies = detail[
-                "technologies"
-            ]
+                    technologies = detail[
+                        "technologies"
+                    ]
 
-            education = detail[
-                "education"
-            ]
+                    education = detail[
+                        "education"
+                    ]
 
-            salary = detail[
-                "salary"
-            ]
+                    salary = detail[
+                        "salary"
+                    ]
 
-            print(
-                f"職缺名稱："
-                f"{job_name}"
-            )
+                    print(
+                        f"職缺名稱："
+                        f"{job_name}"
+                    )
 
-            print(
-                f"工作地點："
-                f"{location}"
-            )
+                    print(
+                        f"工作地點："
+                        f"{location}"
+                    )
 
-            print(
-                f"需要技術："
-                f"{technologies}"
-            )
+                    print(
+                        f"需要技術："
+                        f"{technologies}"
+                    )
 
-            print(
-                f"學歷限制："
-                f"{education}"
-            )
+                    print(
+                        f"學歷限制："
+                        f"{education}"
+                    )
 
-            print(
-                f"薪資範圍："
-                f"{salary}"
-            )
+                    print(
+                        f"薪資範圍："
+                        f"{salary}"
+                    )
 
-            print("=" * 100)
+                    print("=" * 100)
 
-            write_job_log(
-                current_log,
-                job_no=job_no,
-                job_name=job_name,
-                location=location,
-                technologies=technologies,
-                education=education,
-                salary=salary,
-                href=href
-            )
+                    check_auth_during_reading(page)
+                    simulate_reading(
+                        page,
+                        view_duration_range
+                    )
 
-            jobs_in_current_log += 1
+                    print(
+                        "  瀏覽完成"
+                    )
 
-            print(
-                f"  已寫入 LOG："
-                f"{current_log.name}"
-            )
+                    check_auth_during_reading(page)
+                    write_job_log(
+                        current_log,
+                        job_no=job_no,
+                        job_name=job_name,
+                        location=location,
+                        technologies=technologies,
+                        education=education,
+                        salary=salary,
+                        href=href
+                    )
 
-            print(
-                f"  此 LOG 已有 "
-                f"{jobs_in_current_log}/"
-                f"{LOG_MAX_JOBS} 筆"
-            )
+                    jobs_in_current_log += 1
 
-            simulate_reading(
-                page,
-                view_duration_range
-            )
+                    print(
+                        f"  已寫入 LOG："
+                        f"{current_log.name}"
+                    )
 
-            print(
-                "  瀏覽完成"
-            )
+                    print(
+                        f"  此 LOG 已有 "
+                        f"{jobs_in_current_log}/"
+                        f"{LOG_MAX_JOBS} 筆"
+                    )
 
+                    break
+                except AuthenticationInterrupted:
+                    print('  閱讀中已登出，等待登入後重新處理同一筆...')
+                    if auth_attempt >= AUTH_RETRY_PER_JOB:
+                        raise AuthenticationTimeout('同一職缺反覆登出，停止執行。')
+                    ensure_logged_in(page, page.context)
+        except AuthenticationTimeout:
+            raise
         except Exception as e:
             print(
                 f"  瀏覽失敗："
@@ -2030,11 +2154,15 @@ def main():
             "開始收集職缺連結..."
         )
 
-        job_links = collect_job_links(
-            page,
-            max_jobs=MAX_JOBS,
-            max_pages=MAX_PAGES
-        )
+        try:
+            job_links = collect_job_links(
+                page,
+                max_jobs=MAX_JOBS,
+                max_pages=MAX_PAGES
+            )
+        except AuthenticationTimeout as e:
+            print(f'登入檢查未通過，停止收集：{e}')
+            return
 
         print()
 
@@ -2133,23 +2261,19 @@ def main():
             "開始逐一瀏覽職缺..."
         )
 
-        visit_jobs(
-            page,
-            job_links,
-            browse_cdp_session,
-            view_duration_range=(
-                10,
-                30
-            ),
-            batch_size_range=(
-                10,
-                15
-            ),
-            long_break_range=(
-                30,
-                60
+        try:
+            visit_jobs(
+                page,
+                job_links,
+                browse_cdp_session,
+                view_duration_range=(10, 30),
+                batch_size_range=(10, 15),
+                long_break_range=(30, 60)
             )
-        )
+        except AuthenticationTimeout as e:
+            print(f'登入檢查未通過，已安全停止：{e}')
+            print(f'已完成的職缺保留在：{LOG_DIR}')
+            return
 
         print()
         print("=" * 100)
