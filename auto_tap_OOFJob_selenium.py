@@ -264,7 +264,7 @@ MAX_PAGES = CONFIG["max_pages"]
 
 # 每瀏覽幾筆職缺後做一次記憶體清理。
 # 不建立新分頁、不切換分頁，因此不會因清理動作搶視窗焦點。
-MEMORY_CLEANUP_INTERVAL = 20
+MEMORY_CLEANUP_INTERVAL = 0  # 停用強制 GC，避免在每 20 筆後使 Renderer 卡住
 
 # 阻擋對職缺文字解析沒有必要、但容易增加 Chrome RAM 的大型資源。
 BLOCK_HEAVY_RESOURCES = True
@@ -419,14 +419,17 @@ def attach_to_existing_chrome():
 
     options = webdriver.ChromeOptions()
 
+    options.page_load_strategy = "eager"  # 不等待全部圖片/長連線完成
+
     options.add_experimental_option(
         "debuggerAddress",
         "127.0.0.1:9333"
     )
 
-    return webdriver.Chrome(
-        options=options
-    )
+    driver = webdriver.Chrome(options=options)
+    driver.set_page_load_timeout(30)
+    driver.set_script_timeout(10)  # 主要影響 async script；同步 execute_script 仍可能阻塞
+    return driver
 
 
 def configure_low_memory_mode(driver):
@@ -491,44 +494,12 @@ def configure_low_memory_mode(driver):
 
 
 def cleanup_browser_memory(driver):
+    """停用 CDP 強制 GC / Purge 及週期性清 Cache。
+
+    反覆對作用中的 Renderer 強制回收，可能造成下一次 DOM 指令停滯。
+    在未確認根因前先讓 Chrome 自行進行記憶體管理。
     """
-    清除目前分頁可安全回收的瀏覽器記憶體。
-
-    不關閉分頁、不建立新分頁、不切換分頁，
-    因此不會因這個函式把 Chrome 視窗搶到前景。
-    """
-
-    print(
-        "  執行 Chrome 記憶體清理..."
-    )
-
-    # 清 Browser Cache。
-    try:
-        driver.execute_cdp_cmd(
-            "Network.clearBrowserCache",
-            {}
-        )
-    except Exception:
-        pass
-
-    # 要求 V8 / Renderer 執行垃圾回收。
-    try:
-        driver.execute_cdp_cmd(
-            "HeapProfiler.collectGarbage",
-            {}
-        )
-    except Exception:
-        pass
-
-    # 部分 Chrome 版本支援這個 Memory Domain 指令。
-    # 不支援時直接忽略即可。
-    try:
-        driver.execute_cdp_cmd(
-            "Memory.forciblyPurgeJavaScriptMemory",
-            {}
-        )
-    except Exception:
-        pass
+    print("  略過強制記憶體清理（安全模式）", flush=True)
 
 
 def get_page_state(driver):
@@ -722,61 +693,23 @@ def wait_for_job_detail(
     return False
 
 
-def navigate_job_page(
-        driver,
-        href,
-        timeout=30
-):
-    """
-    開啟職缺頁並等待真正可解析的內容。
-
-    流程：
-    1. driver.get()
-    2. document.readyState == complete
-    3. 等職缺主要欄位進 DOM
-    4. 印出前景 / 背景與 DOM 狀態
-    """
-
-    old_page_load_timeout = None
-
+def navigate_job_page(driver, href, timeout=30):
+    """導航及檢查載入階段，各階段都有明確輸出。"""
+    print("  [導航] driver.get() 開始", flush=True)
     try:
-        driver.set_page_load_timeout(
-            timeout
-        )
-
-        driver.get(
-            href
-        )
-
+        driver.set_page_load_timeout(timeout)
+        driver.get(href)
+        print("  [導航] driver.get() 返回", flush=True)
     except TimeoutException:
-        print(
-            "  頁面載入逾時，"
-            "繼續檢查目前 DOM"
-        )
-
+        print("  [導航] driver.get() 逾時，嘗試檢查 DOM", flush=True)
     finally:
-        # Selenium 沒有 getter 可可靠取得原本值；
-        # 後續統一恢復為常用的 30 秒。
-        try:
-            driver.set_page_load_timeout(
-                30
-            )
-        except Exception:
-            pass
+        driver.set_page_load_timeout(30)
 
-    wait_for_document_complete(
-        driver,
-        timeout=timeout
-    )
+    print("  [導航] 等待主要職缺內容", flush=True)
+    wait_for_job_detail(driver, timeout=JOB_DETAIL_WAIT_TIMEOUT)
+    print("  [導航] 主要內容等待結束", flush=True)
+    print_page_state(driver)
 
-    wait_for_job_detail(
-        driver,
-        timeout=JOB_DETAIL_WAIT_TIMEOUT
-    )
-
-    print_page_state(
-        driver
-    )
 
 
 # 使用目前分頁
@@ -879,6 +812,7 @@ def wait_for_auth_state(driver, timeout=12):
 
 def ensure_logged_in(driver, timeout=60):
     """登出後只點擊一次『登入/註冊』，輪詢直到確認已登入。"""
+    print('  [登入] 讀取頁首狀態...', flush=True)
     state = wait_for_auth_state(driver)
     if state == 'logged_in':
         return False
@@ -2744,11 +2678,14 @@ def visit_jobs(
         try:
             # 登出時自動登入，重做同一筆最多 2 次，不直接跳過。
             for auth_attempt in range(3):
-                ensure_logged_in(driver) if inspect_auth_state(driver) != 'unknown' else None
-                print('  等待頁面與職缺詳細資料載入...')
+                # 上一頁可能在記憶體清理後卡住，不要在導航之前進行 DOM 登入檢查。
+                print('  [職缺] 準備導航（先導航再檢查登入）', flush=True)
                 navigate_job_page(driver, href, timeout=30)
-                if ensure_logged_in(driver):
-                    print('  已恢復登入，重新載入當前職缺。')
+                print('  [登入檢查] 開始', flush=True)
+                recovered = ensure_logged_in(driver)
+                print('  [登入檢查] 完成', flush=True)
+                if recovered:
+                    print('  已恢復登入，重新載入當前職缺。', flush=True)
                     continue
                 driver.execute_script('window.scrollTo(0, 0);')
                 time.sleep(0.3)

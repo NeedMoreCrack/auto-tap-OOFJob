@@ -188,7 +188,8 @@ LOG_MAX_JOBS = CONFIG["log_max_jobs"]
 MAX_JOBS = CONFIG["max_jobs"]
 MAX_PAGES = CONFIG["max_pages"]
 
-MEMORY_CLEANUP_INTERVAL = 20
+# 關閉 CDP 強制 GC／Purge：這類指令可能讓 Renderer 卡住，且不能保證降低常駐記憶體。
+MEMORY_CLEANUP_INTERVAL = 0
 
 # 點擊登入入口後等待網站自行恢復登入；逾時停止，避免記錄錯誤職缺。
 AUTH_WAIT_SECONDS = 60
@@ -431,33 +432,9 @@ def create_low_memory_cdp_session(context, page):
 
 
 def cleanup_chrome_memory(session):
-    """
-    在不開新 Tab、不切換視窗的情況下，
-    要求 Chrome 清理 Browser Cache 與 JavaScript Heap。
-    """
+    """不執行強制 JS Heap 回收；由 Chrome 自行管理記憶體。"""
+    print("  略過強制記憶體清理（防止 Renderer 無回應）", flush=True)
 
-    print("  執行 Chrome 記憶體清理...")
-
-    try:
-        session.send(
-            "Network.clearBrowserCache"
-        )
-    except Exception:
-        pass
-
-    try:
-        session.send(
-            "HeapProfiler.collectGarbage"
-        )
-    except Exception:
-        pass
-
-    try:
-        session.send(
-            "Memory.forciblyPurgeJavaScriptMemory"
-        )
-    except Exception:
-        pass
 
 
 def print_page_state(page):
@@ -577,11 +554,13 @@ def navigate_job_page(
     """
 
     try:
+        print("  [導航] page.goto() 開始", flush=True)
         page.goto(
             url,
             wait_until="domcontentloaded",
             timeout=timeout
         )
+        print("  [導航] page.goto() 完成", flush=True)
 
     except PlaywrightTimeoutError:
         print(
@@ -601,18 +580,7 @@ def navigate_job_page(
             "繼續處理"
         )
 
-    try:
-        page.wait_for_load_state(
-            "networkidle",
-            timeout=8000
-        )
-
-    except PlaywrightTimeoutError:
-        print(
-            "  networkidle 未達成，"
-            "可能仍有 analytics / tracking request，"
-            "繼續等待職缺內容"
-        )
+    # 動態網站持續發送追蹤請求，networkidle 容易延遲；改直接等職缺欄位。
 
     wait_for_job_detail(
         page,
@@ -1876,17 +1844,15 @@ def visit_jobs(
         try:
             for auth_attempt in range(AUTH_RETRY_PER_JOB + 1):
                 try:
-                    if page.url != "about:blank":
-                        ensure_logged_in(page, page.context)
-                    print(
-                        "  等待頁面與職缺詳細資料載入..."
-                    )
-
+                    # 先導航，再檢查登入狀態。
+                    # 原版在每筆開頭執行 page.evaluate()，可能卡在上一頁失去回應的 Renderer。
+                    print("  [導航] 準備開啟職缺頁", flush=True)
                     navigate_job_page(
                         page,
                         href,
                         timeout=30000
                     )
+                    print("  [導航] 職缺頁載入流程已返回", flush=True)
 
                     try:
                         page.evaluate(
@@ -1900,7 +1866,9 @@ def visit_jobs(
                         0.3
                     )
 
+                    print("  [登入檢查] 開始", flush=True)
                     ensure_logged_in(page, page.context)
+                    print("  [登入檢查] 通過", flush=True)
                     if (urlsplit(page.url).hostname or '').endswith('104.com.tw') is False or '/login' in urlsplit(page.url).path.lower():
                         raise AuthenticationInterrupted('登入後仍停在非職缺頁，重新讀取職缺')
                     detail = extract_job_detail_with_retry(
