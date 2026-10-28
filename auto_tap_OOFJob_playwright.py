@@ -188,8 +188,11 @@ LOG_MAX_JOBS = CONFIG["log_max_jobs"]
 MAX_JOBS = CONFIG["max_jobs"]
 MAX_PAGES = CONFIG["max_pages"]
 
-# 關閉 CDP 強制 GC／Purge：這類指令可能讓 Renderer 卡住，且不能保證降低常駐記憶體。
-MEMORY_CLEANUP_INTERVAL = 0
+# 在不新增、關閉、切換 Tab 的前提下，於批次邊界暫時導向 about:blank。
+# 這讓原本的 104 頁面資源有機會釋放；但 Chrome 不保證立即降低 RSS。
+# 設為 0 可以關閉；預設 75 筆，避免頻繁重載。
+MEMORY_CLEANUP_INTERVAL = 20
+MEMORY_CHECKPOINT_TIMEOUT_MS = 10000
 
 # 點擊登入入口後等待網站自行恢復登入；逾時停止，避免記錄錯誤職缺。
 AUTH_WAIT_SECONDS = 60
@@ -431,10 +434,51 @@ def create_low_memory_cdp_session(context, page):
     return session
 
 
-def cleanup_chrome_memory(session):
-    """不執行強制 JS Heap 回收；由 Chrome 自行管理記憶體。"""
-    print("  略過強制記憶體清理（防止 Renderer 無回應）", flush=True)
+def get_renderer_heap_metrics(session):
+    """回傳目前頁面 CDP 可觀察的 JS Heap（非 Renderer RSS）。"""
+    try:
+        session.send("Performance.enable")
+        response = session.send("Performance.getMetrics")
+        values = {
+            item["name"]: item["value"]
+            for item in response.get("metrics", [])
+        }
+        used = values.get("JSHeapUsedSize")
+        total = values.get("JSHeapTotalSize")
+        return (
+            used / (1024 * 1024) if used is not None else None,
+            total / (1024 * 1024) if total is not None else None,
+        )
+    except Exception as exc:
+        print(f"  [RAM] 無法取得 JS Heap 指標：{type(exc).__name__}: {exc}", flush=True)
+        return None, None
 
+
+def cleanup_chrome_memory(page, session):
+    """安全檢查點：同一 Tab 導向空白頁，不建立／關閉／切換 Tab。
+
+    原本已完成的職缺與 LOG 保存在 Python 記憶體／檔案；下一輪
+    visit_jobs() 會先 page.goto(下一個 href)，再做登入檢查。
+    不呼叫 HeapProfiler.collectGarbage / Memory.forciblyPurgeJavaScriptMemory。
+    """
+    used, total = get_renderer_heap_metrics(session)
+    if used is not None:
+        print(f"  [RAM] 檢查點前：JS Heap {used:.1f} / {total:.1f} MiB", flush=True)
+
+    print("  [RAM] 使用原本 Tab 暫時離開職缺頁，讓 Chrome 有機會回收資源...", flush=True)
+    try:
+        page.goto(
+            "about:blank",
+            wait_until="commit",
+            timeout=MEMORY_CHECKPOINT_TIMEOUT_MS,
+        )
+        print("  [RAM] 已切至 about:blank（無新分頁、無分頁切換）", flush=True)
+    except PlaywrightTimeoutError:
+        print("  [RAM] 空白頁導航逾時；下一筆仍會正常導航至職缺頁", flush=True)
+    except Exception as exc:
+        print(f"  [RAM] 檢查點失敗：{type(exc).__name__}: {exc}", flush=True)
+    # 不強制 GC、不清除 Cookie / localStorage / sessionStorage。
+    # 這是軟性釋放資源，非硬性 RAM 上限，也不保證 RSS 立刻下降。
 
 
 def print_page_state(page):
@@ -1801,7 +1845,7 @@ def visit_jobs(
     print("職缺連結已全部收集完成。")
     print(
         "接下來使用同一個 Chrome Tab 依序瀏覽，"
-        "並定期清理 Chrome 記憶體。"
+        "定期在同一分頁執行軟性記憶體檢查點。"
     )
     print("=" * 100)
 
@@ -2018,6 +2062,7 @@ def visit_jobs(
                 and idx % memory_cleanup_interval == 0
         ):
             cleanup_chrome_memory(
+                page,
                 cdp_session
             )
 
