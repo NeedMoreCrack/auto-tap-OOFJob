@@ -264,7 +264,10 @@ MAX_PAGES = CONFIG["max_pages"]
 
 # 每瀏覽幾筆職缺後做一次記憶體清理。
 # 不建立新分頁、不切換分頁，因此不會因清理動作搶視窗焦點。
-MEMORY_CLEANUP_INTERVAL = 0  # 停用強制 GC，避免在每 20 筆後使 Renderer 卡住
+MEMORY_CLEANUP_INTERVAL = 20  # 每 20 筆執行一次 CDP 記憶體清理
+ENABLE_CLEAR_BROWSER_CACHE = True
+ENABLE_V8_GC = True
+ENABLE_MEMORY_PURGE = True
 
 # 阻擋對職缺文字解析沒有必要、但容易增加 Chrome RAM 的大型資源。
 BLOCK_HEAVY_RESOURCES = True
@@ -493,13 +496,50 @@ def configure_low_memory_mode(driver):
         )
 
 
-def cleanup_browser_memory(driver):
-    """停用 CDP 強制 GC / Purge 及週期性清 Cache。
+def get_js_heap_metrics(driver):
+    """以 CDP Performance Domain 取得 V8 Heap；單位 MiB。"""
+    try:
+        driver.execute_cdp_cmd("Performance.enable", {})
+        result = driver.execute_cdp_cmd("Performance.getMetrics", {})
+        values = {
+            item["name"]: item["value"]
+            for item in result.get("metrics", [])
+        }
+        used = values.get("JSHeapUsedSize")
+        total = values.get("JSHeapTotalSize")
+        if used is None or total is None:
+            return None
+        return used / 1024**2, total / 1024**2
+    except Exception as exc:
+        print(f"  [RAM] 無法取得 JS Heap：{type(exc).__name__}: {exc}", flush=True)
+        return None
 
-    反覆對作用中的 Renderer 強制回收，可能造成下一次 DOM 指令停滯。
-    在未確認根因前先讓 Chrome 自行進行記憶體管理。
-    """
-    print("  略過強制記憶體清理（安全模式）", flush=True)
+
+def cleanup_browser_memory(driver):
+    """維持原分頁與視窗焦點，按順序執行與 Playwright 相同的 CDP 清理。"""
+    before = get_js_heap_metrics(driver)
+    if before:
+        print(f"  [RAM] 清理前 JS Heap {before[0]:.1f}/{before[1]:.1f} MiB", flush=True)
+
+    commands = [
+        ("Network.clearBrowserCache", ENABLE_CLEAR_BROWSER_CACHE),
+        ("HeapProfiler.collectGarbage", ENABLE_V8_GC),
+        ("Memory.forciblyPurgeJavaScriptMemory", ENABLE_MEMORY_PURGE),
+    ]
+    for command, enabled in commands:
+        if not enabled:
+            continue
+        print(f"  [RAM] 開始 {command}", flush=True)
+        try:
+            driver.execute_cdp_cmd(command, {})
+            print(f"  [RAM] 完成 {command}", flush=True)
+        except Exception as exc:
+            print(f"  [RAM] {command} 失敗：{type(exc).__name__}: {exc}", flush=True)
+
+    after = get_js_heap_metrics(driver)
+    if after:
+        print(f"  [RAM] 清理後 JS Heap {after[0]:.1f}/{after[1]:.1f} MiB", flush=True)
+    print("  [RAM] 清理流程結束（未新增、關閉或切換 Tab）", flush=True)
 
 
 def get_page_state(driver):
