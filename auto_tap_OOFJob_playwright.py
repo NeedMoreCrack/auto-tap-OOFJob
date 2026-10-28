@@ -188,11 +188,12 @@ LOG_MAX_JOBS = CONFIG["log_max_jobs"]
 MAX_JOBS = CONFIG["max_jobs"]
 MAX_PAGES = CONFIG["max_pages"]
 
-# 在不新增、關閉、切換 Tab 的前提下，於批次邊界暫時導向 about:blank。
-# 這讓原本的 104 頁面資源有機會釋放；但 Chrome 不保證立即降低 RSS。
-# 設為 0 可以關閉；預設 75 筆，避免頻繁重載。
+# 舊版已確認有效的定期 GC：保留單一 Tab，無 about:blank 或視窗切換。
 MEMORY_CLEANUP_INTERVAL = 20
-MEMORY_CHECKPOINT_TIMEOUT_MS = 10000
+# 可以逐一關閉，以找出對 RAM 及卡頓影響最大的指令。
+ENABLE_CLEAR_BROWSER_CACHE = True
+ENABLE_V8_GC = True
+ENABLE_MEMORY_PURGE = True
 
 # 點擊登入入口後等待網站自行恢復登入；逾時停止，避免記錄錯誤職缺。
 AUTH_WAIT_SECONDS = 60
@@ -455,30 +456,32 @@ def get_renderer_heap_metrics(session):
 
 
 def cleanup_chrome_memory(page, session):
-    """安全檢查點：同一 Tab 導向空白頁，不建立／關閉／切換 Tab。
+    """恢復舊版 CDP 清理；不導航、不改變 Tab、不影響登入儲存資料。
 
-    原本已完成的職缺與 LOG 保存在 Python 記憶體／檔案；下一輪
-    visit_jobs() 會先 page.goto(下一個 href)，再做登入檢查。
-    不呼叫 HeapProfiler.collectGarbage / Memory.forciblyPurgeJavaScriptMemory。
+    注意：CDP 呼叫在 Renderer 無回應時仍可能阻塞，故保留前後診斷訊息。
     """
     used, total = get_renderer_heap_metrics(session)
     if used is not None:
-        print(f"  [RAM] 檢查點前：JS Heap {used:.1f} / {total:.1f} MiB", flush=True)
+        print(f"  [RAM] 清理前 JS Heap {used:.1f}/{total:.1f} MiB", flush=True)
 
-    print("  [RAM] 使用原本 Tab 暫時離開職缺頁，讓 Chrome 有機會回收資源...", flush=True)
-    try:
-        page.goto(
-            "about:blank",
-            wait_until="commit",
-            timeout=MEMORY_CHECKPOINT_TIMEOUT_MS,
-        )
-        print("  [RAM] 已切至 about:blank（無新分頁、無分頁切換）", flush=True)
-    except PlaywrightTimeoutError:
-        print("  [RAM] 空白頁導航逾時；下一筆仍會正常導航至職缺頁", flush=True)
-    except Exception as exc:
-        print(f"  [RAM] 檢查點失敗：{type(exc).__name__}: {exc}", flush=True)
-    # 不強制 GC、不清除 Cookie / localStorage / sessionStorage。
-    # 這是軟性釋放資源，非硬性 RAM 上限，也不保證 RSS 立刻下降。
+    steps = [
+        (ENABLE_CLEAR_BROWSER_CACHE, "Network.clearBrowserCache"),
+        (ENABLE_V8_GC, "HeapProfiler.collectGarbage"),
+        (ENABLE_MEMORY_PURGE, "Memory.forciblyPurgeJavaScriptMemory"),
+    ]
+    for enabled, command in steps:
+        if not enabled:
+            continue
+        print(f"  [RAM] 開始 {command}", flush=True)
+        try:
+            session.send(command)
+            print(f"  [RAM] 完成 {command}", flush=True)
+        except Exception as exc:
+            print(f"  [RAM] {command} 失敗：{type(exc).__name__}: {exc}", flush=True)
+
+    used, total = get_renderer_heap_metrics(session)
+    if used is not None:
+        print(f"  [RAM] 清理後 JS Heap {used:.1f}/{total:.1f} MiB", flush=True)
 
 
 def print_page_state(page):
